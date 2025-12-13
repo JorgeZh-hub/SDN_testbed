@@ -1,0 +1,7 @@
+aiocoap
+flask
+gunicorn
+pika
+requests
+websockets
+paho-mqtt

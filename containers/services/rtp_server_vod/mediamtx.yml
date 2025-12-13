@@ -1,0 +1,43 @@
+###############################################
+# INPUT / OUTPUT PROTOCOLS
+
+rtsp:
+  enabled: yes
+  address: :8554
+
+rtmp:
+  enabled: yes
+  address: :1935
+
+srt:
+  enabled: no
+  address: :8890
+
+# HTTP-based streaming
+hls:
+  enabled: yes
+  address: :8888
+  allowOrigin: "*"
+
+# WebRTC (WHEP)
+webrtc:
+  enabled: yes
+  address: :8889
+  encryption: no
+  localUDPAddress: :8189
+  allowOrigin: "*"
+
+###############################################
+# STREAM PATHS
+paths:
+  mivideo:
+    source: publisher
+    overridePublisher: yes
+
+  mivideo2:
+    source: publisher
+    overridePublisher: yes
+
+  mivideo3:
+    source: publisher
+    overridePublisher: yes

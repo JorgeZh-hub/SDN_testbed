@@ -1,0 +1,20 @@
+# --- NO SUBIR DATA PESADA ---
+data/
+
+# resultados/capturas suelen ser grandes (pcaps, etc.)
+results/captures/
+results/figures/
+results/logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# logs sueltos
+*.log
+
+# OS/Editor
+.DS_Store
+.vscode/
+.idea/
