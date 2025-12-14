@@ -5,7 +5,6 @@ data/
 results/captures/
 results/figures/
 results/logs/
-scripts/stop_containers.sh
 
 # Python
 __pycache__/
