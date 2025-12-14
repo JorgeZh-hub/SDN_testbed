@@ -5,7 +5,7 @@ set -euo pipefail
 # Docker helper                             #
 #############################################
 
-# Use sudo docker by default; remove 'sudo' if your user is in the docker group.
+# Use sudo docker by default; change to DOCKER=(docker) if not needed.
 DOCKER=(sudo docker)
 
 # Image to use for Mininet/Containernet cleanup
@@ -16,8 +16,8 @@ CONTAINERNET_IMAGE="${CONTAINERNET_IMAGE:-containernet_docker}"
 #############################################
 
 echo "[STOP] Stopping Docker containers..."
-# WARNING: this stops ALL containers. If you want to limit it (e.g. by name prefix),
-# adjust the --filter line accordingly.
+# WARNING: this stops ALL containers. If you want to restrict this later,
+# adjust the 'docker ps' filter to match only your lab containers.
 "${DOCKER[@]}" ps -a --format "{{.ID}}" | xargs -r "${DOCKER[@]}" stop
 
 echo "[STOP] Removing stopped containers..."
@@ -26,13 +26,11 @@ echo "[STOP] Removing stopped containers..."
 echo "[STOP] Containers stopped and removed."
 
 #############################################
-# Mininet / OVS cleanup via containernet    #
+# Mininet / OVS cleanup via Containernet    #
 #############################################
 
 echo "[CLEANUP] Running Mininet/OVS cleanup using image: ${CONTAINERNET_IMAGE} ..."
 
-# We run a short-lived Containernet container with host namespaces
-# so that mininet.clean.cleanup() operates on the host network and OVS.
 "${DOCKER[@]}" run --rm \
   --name containernet-clean \
   --privileged \
@@ -40,7 +38,8 @@ echo "[CLEANUP] Running Mininet/OVS cleanup using image: ${CONTAINERNET_IMAGE} .
   --pid=host \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /var/run/openvswitch:/var/run/openvswitch \
+  --entrypoint python3 \
   "${CONTAINERNET_IMAGE}" \
-  python3 -c "from mininet.clean import cleanup; cleanup()"
+  -c "from mininet.clean import cleanup; cleanup()"
 
 echo "[CLEANUP] Mininet/OVS cleanup completed."
