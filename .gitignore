@@ -2,9 +2,7 @@
 data/
 
 # resultados/capturas suelen ser grandes (pcaps, etc.)
-results/captures/
-results/figures/
-results/logs/
+results/
 
 # Python
 __pycache__/

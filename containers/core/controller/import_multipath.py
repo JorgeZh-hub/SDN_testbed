@@ -6,7 +6,7 @@ import random
 import time
 import heapq
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from operator import itemgetter
 from dataclasses import dataclass
 

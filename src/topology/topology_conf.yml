@@ -4,7 +4,7 @@ hosts:
     ip: "203.0.113.1/24"
     mac: "02:42:0a:00:00:01"
     comand_default:
-      - "ping -c 1 203.0.113.254; /usr/sbin/mosquitto -c /etc/mosquitto/mosquitto.conf -v; bash /app/tester_broker.sh"
+      - "/usr/sbin/mosquitto -c /etc/mosquitto/mosquitto.conf -v; bash /app/tester_broker.sh"
     volumes:
       - "../../containers/services/mqtt_broker/mosquitto.conf:/etc/mosquitto/mosquitto.conf:ro"
       - "../../containers/services/mqtt_broker/tester_broker.sh:/app/tester_broker.sh:ro"
@@ -17,7 +17,6 @@ hosts:
     volumes:
       - "../../containers/services/amqp_broker/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro"
       - "../../containers/services/amqp_broker/start_rabbit.sh:/app/start_rabbit.sh:ro"
-
 
   cliMqtt0: # clientIot0
     image: "iot_container:latest"
