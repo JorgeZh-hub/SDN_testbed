@@ -1,0 +1,92 @@
+classifiers:
+  # ===================== MQTT (TCP 1883/8883) =====================
+  - name: "MQTT_cliMqtt2_192.51.100.29__brkMqtt1_203.0.113.6"
+    class: "CRIT"
+    priority: 100
+    match:
+      ip_proto: "tcp"
+      l4_any_ports: [1883, 8883]
+      src_subnets: ["192.51.100.29/32", "203.0.113.6/32"]
+      dst_subnets: ["192.51.100.29/32", "203.0.113.6/32"]
+
+  - name: "MQTT_cliMqtt2_192.51.100.29__brkMqtt0_203.0.113.1"
+    class: "CRIT"
+    priority: 99
+    match:
+      ip_proto: "tcp"
+      l4_any_ports: [1883, 8883]
+      src_subnets: ["192.51.100.29/32", "203.0.113.1/32"]
+      dst_subnets: ["192.51.100.29/32", "203.0.113.1/32"]
+
+  - name: "MQTT_brkMqtt0_203.0.113.1__cliMqtt0_203.0.113.17"
+    class: "CRIT"
+    priority: 98
+    match:
+      ip_proto: "tcp"
+      l4_any_ports: [1883, 8883]
+      src_subnets: ["203.0.113.1/32", "203.0.113.17/32"]
+      dst_subnets: ["203.0.113.1/32", "203.0.113.17/32"]
+
+  - name: "MQTT_cliMqtt1_192.51.100.28__brkMqtt1_203.0.113.6"
+    class: "CRIT"
+    priority: 97
+    match:
+      ip_proto: "tcp"
+      l4_any_ports: [1883, 8883]
+      src_subnets: ["192.51.100.28/32", "203.0.113.6/32"]
+      dst_subnets: ["192.51.100.28/32", "203.0.113.6/32"]
+
+  # ===================== HTTP (TCP 80) =====================
+  - name: "HTTP_cliHttp0_203.0.113.18__srvHttp0_203.0.113.2"
+    class: "CRIT"
+    priority: 80
+    match:
+      ip_proto: "tcp"
+      l4_any_ports: [5000]
+      src_subnets: ["203.0.113.18/32", "203.0.113.2/32"]
+      dst_subnets: ["203.0.113.18/32", "203.0.113.2/32"]
+
+  # ===================== WebSocket (TCP 8080) =====================
+  - name: "WBS_SF_203.0.113.18__srvWbS0_203.0.113.4"
+    class: "CRIT"
+    priority: 79
+    match:
+      ip_proto: "tcp"
+      l4_any_ports: [8080]
+      src_subnets: ["203.0.113.18/32", "203.0.113.4/32"]
+      dst_subnets: ["203.0.113.18/32", "203.0.113.4/32"]
+
+  # ===================== CoAP (UDP 5683/5684) =====================
+  - name: "COAP_SF_192.51.100.30__srvCoap0_203.0.113.3"
+    class: "CRIT"
+    priority: 70
+    match:
+      ip_proto: "udp"
+      l4_any_ports: [5683, 5684]
+      src_subnets: ["192.51.100.30/32", "203.0.113.3/32"]
+      dst_subnets: ["192.51.100.30/32", "203.0.113.3/32"]
+
+  - name: "COAP_srvCoap0_203.0.113.3__cliCoap1_203.0.113.19"
+    class: "CRIT"
+    priority: 69
+    match:
+      ip_proto: "udp"
+      l4_any_ports: [5683, 5684]
+      src_subnets: ["203.0.113.3/32", "203.0.113.19/32"]
+      dst_subnets: ["203.0.113.3/32", "203.0.113.19/32"]
+
+  # ===================== AMQP (TCP 5672/5671) =====================
+  - name: "AMQP_SF_203.0.113.18__brkAmqp0_203.0.113.8"
+    class: "CRIT"
+    priority: 60
+    match:
+      ip_proto: "tcp"
+      l4_any_ports: [5672, 5671]
+      src_subnets: ["203.0.113.18/32", "203.0.113.8/32"]
+      dst_subnets: ["203.0.113.18/32", "203.0.113.8/32"]
+
+  # ===================== Default =====================
+  - name: "default"
+    class: "BE"
+    priority: 0
+    match: {}

@@ -1,3 +1,10 @@
+controller:
+  name: "ryu-ctrl"
+  image: "controller_ryu"
+  command: "--observe-links /app/app.py"
+  volumes:
+    - "../../containers/core/controller/baseline:/app"
+
 hosts:
   brkMqtt0: # brokerIot0
     image: "mqtt_broker:latest"

@@ -1,126 +1,82 @@
 #!/bin/bash
 
 ############################################
-#      CAPTURA DE MÚLTIPLES INTERFACES
-#   con soporte para truncado (-s bytes)
+# v2: CAPTURA DE MÚLTIPLES INTERFACES
+#     sin bloquear por la interfaz más lenta.
 #
-#   Uso:
-#   ./capture_links.sh if1 if2 ... -t 60 -o dir -s 96
+# Cambios clave:
+#  - Ya NO espera a que estén *todas* las interfaces para empezar.
+#  - Lanza un "worker" por interfaz que espera y luego hace `exec tcpdump`.
+#    (el PID que guardas siempre corresponde al tcpdump final).
+#
+# Uso:
+#   ./capture_links_v2.sh if1 if2 ... -o dir -s 96
 ############################################
 
-# --- Valores por defecto ---
-DURATION=60
 OUTPUT_DIR="./capturas"
-SNAPLEN=0          # 0 = captura completa
+SNAPLEN=0
 INTERFACES=()
 
-# --- Parseo de argumentos ---
 while [[ $# -gt 0 ]]; do
-    case "$1" in
-        -t|--time)
-            DURATION="$2"
-            shift 2
-            ;;
-        -o|--output)
-            OUTPUT_DIR="$2"
-            shift 2
-            ;;
-        -s|--snaplen)
-            SNAPLEN="$2"
-            shift 2
-            ;;
-        -*)
-            echo "Opción desconocida: $1"
-            exit 1
-            ;;
-        *)
-            INTERFACES+=("$1")
-            shift
-            ;;
-    esac
+  case "$1" in
+    -o|--output) OUTPUT_DIR="$2"; shift 2;;
+    -s|--snaplen) SNAPLEN="$2"; shift 2;;
+    -*) echo "Opción desconocida: $1"; exit 1;;
+    *) INTERFACES+=("$1"); shift;;
+  esac
 done
 
-# --- Validación ---
 if [ ${#INTERFACES[@]} -eq 0 ]; then
-    echo "Uso: $0 <iface1> <iface2> ... -t <segundos> -o <dir> [-s snaplen]"
-    echo "Ejemplo: $0 switch3-eth1 switch3-eth2 -t 300 -o ./pcaps -s 128"
-    exit 1
+  echo "Uso: $0 <iface1> <iface2> ... -o <dir> [-s snaplen]"
+  exit 1
 fi
 
 mkdir -p "$OUTPUT_DIR"
 
-wait_for_interfaces() {
-    local pending=("${INTERFACES[@]}")
-    local attempts=0
-    local max_attempts=100
-
-    while [ ${#pending[@]} -gt 0 ]; do
-        local next_pending=()
-        for iface in "${pending[@]}"; do
-            if [ -d "/sys/class/net/$iface" ]; then
-                echo "✅ Interfaz disponible: $iface"
-            else
-                next_pending+=("$iface")
-            fi
-        done
-
-        if [ ${#next_pending[@]} -eq 0 ]; then
-            break
-        fi
-
-        attempts=$((attempts + 1))
-        if [ "$attempts" -ge "$max_attempts" ]; then
-            echo "❌ No se pudieron encontrar todas las interfaces tras ${max_attempts} intentos."
-            exit 1
-        fi
-
-        pending=("${next_pending[@]}")
-        sleep 2
-    done
-}
-
-wait_for_interfaces
-
 echo "============================================="
-echo "  INICIANDO CAPTURAS"
+echo "  INICIANDO CAPTURAS (v2)"
 echo "  Interfaces: ${INTERFACES[*]}"
-echo "  Duración:   ${DURATION}s"
 echo "  Carpeta:    $OUTPUT_DIR"
 if [ "$SNAPLEN" -gt 0 ]; then
-    echo "  Truncado:   ${SNAPLEN} bytes por paquete"
+  echo "  Truncado:   ${SNAPLEN} bytes por paquete"
 else
-    echo "  Truncado:   NO (captura completa)"
+  echo "  Truncado:   NO (captura completa)"
 fi
 echo "============================================="
 
-# --- Iniciar capturas ---
 PIDS=()
 
-for IFACE in "${INTERFACES[@]}"; do
-    PCAP_FILE="${OUTPUT_DIR}/${IFACE}.pcap"
+cleanup() {
+  for pid in "${PIDS[@]}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+  wait 2>/dev/null || true
+}
+trap 'cleanup' EXIT
+trap 'cleanup; exit 0' INT TERM
 
-    echo "➡️  Capturando $IFACE → $PCAP_FILE"
+start_one() {
+  local IFACE="$1"
+  local PCAP_FILE="${OUTPUT_DIR}/${IFACE}.pcap"
+  echo "➡️  [${IFACE}] esperando interfaz y capturando → $PCAP_FILE"
 
+  # El PID de este subshell será el PID del tcpdump, porque hacemos exec.
+  (
+    while [ ! -d "/sys/class/net/$IFACE" ]; do
+      sleep 1
+    done
+    echo "✅ [${IFACE}] interfaz disponible, arrancando tcpdump"
     if [ "$SNAPLEN" -gt 0 ]; then
-        tcpdump -i "$IFACE" -s "$SNAPLEN" -w "$PCAP_FILE" >/dev/null 2>&1 &
+      exec tcpdump -i "$IFACE" -s "$SNAPLEN" -w "$PCAP_FILE" >/dev/null 2>&1
     else
-        tcpdump -i "$IFACE" -w "$PCAP_FILE" >/dev/null 2>&1 &
+      exec tcpdump -i "$IFACE" -w "$PCAP_FILE" >/dev/null 2>&1
     fi
+  ) &
+  PIDS+=($!)
+}
 
-    PIDS+=($!)
+for IFACE in "${INTERFACES[@]}"; do
+  start_one "$IFACE"
 done
 
-sleep "$DURATION"
-
-if [ ${#PIDS[@]} -eq 0 ]; then
-    echo "❌ No se pudo iniciar ninguna captura. Abortando."
-    exit 1
-fi
-
-echo "🛑 Tiempo terminado. Deteniendo capturas..."
-for PID in "${PIDS[@]}"; do
-    kill "$PID" 2>/dev/null
-done
-
-echo "✔ Capturas guardadas en: $OUTPUT_DIR"
-echo "============================================="
+wait

@@ -26,21 +26,6 @@ def slugify(text):
     return safe or "scenario"
 
 
-def derive_interfaces(capture_conf_file, topology_file):
-    """Invoke helper to obtain capture interfaces based on capture config/topology."""
-    cmd = [
-        "python3",
-        "src/analyzer/get_flow_interfaces.py",
-        "--flows",
-        str(capture_conf_file),
-        "--topology",
-        str(topology_file),
-    ]
-    out = subprocess.check_output(cmd, text=True).strip()
-    interfaces = [line for line in out.splitlines() if line.strip()]
-    return sorted(set(interfaces))
-
-
 def resolve_container_flow(col_name, hosts_cfg):
     """
     Given a column <container>_<flow>, return (container, flow).
@@ -262,24 +247,9 @@ def main():
         capture_conf_path = (script_dir / capture_conf_path).resolve()
 
     base_topology = load_yaml(base_topology_path)
-    capture_conf = load_yaml(capture_conf_path)
+    # ensure capture_conf exists/valid
+    load_yaml(capture_conf_path)
 
-    containers_to_capture = []
-    links_to_capture = []
-    if isinstance(capture_conf, dict):
-        raw_containers = capture_conf.get("containers", [])
-        if isinstance(raw_containers, list):
-            containers_to_capture = [str(c) for c in raw_containers]
-        raw_links = capture_conf.get("links", [])
-        if isinstance(raw_links, list):
-            normalized_links = []
-            for l in raw_links:
-                if isinstance(l, dict):
-                    for _, val in l.items():
-                        normalized_links.append(str(val).strip())
-                else:
-                    normalized_links.append(str(l).strip())
-            links_to_capture = normalized_links
     output_root = Path(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
 
@@ -340,9 +310,6 @@ def main():
         print(f"🗺️  Topology file: {scenario_topology}")
         print("🔢 n_proc replacements:", ", ".join(f"{c}.{f}={n}" for c, f, n in replacements))
 
-        interfaces = derive_interfaces(capture_conf_path, scenario_topology)
-        if not interfaces:
-            raise RuntimeError(f"No capture interfaces derived for {scenario_name}")
         env_base = os.environ.copy()
         env_base["TOPOLOGY_FILE"] = str(scenario_topology)
 
@@ -370,24 +337,15 @@ def main():
                 str(args.duration),
                 "--log-dir",
                 str(logs_dir),
+                "--capture-conf",
+                str(capture_conf_path),
+                "--metrics-dir",
+                str(containers_dir),
+                "--links-metrics-dir",
+                str(ovs_dir),
             ]
-            for iface in interfaces:
-                run_cmd.extend(["-i", iface])
-            if containers_to_capture:
-                for container in containers_to_capture:
-                    run_cmd.extend(["-c", container])
-                run_cmd.extend(["--metrics-dir", str(containers_dir)])
-            if links_to_capture:
-                for link in links_to_capture:
-                    run_cmd.extend(["-l", link])
-                run_cmd.extend(
-                    [
-                        "--links-metrics-dir",
-                        str(ovs_dir),
-                    ]
-                )
-                if args.queue_analyzer:
-                    run_cmd.append("--queue-analyzer")
+            if args.queue_analyzer:
+                run_cmd.append("--queue-analyzer")
 
             print(f"🏃 [run {rep}/{args.repetitions}] Executing:", " ".join(run_cmd))
             run_log = logs_dir / "run_command.log"

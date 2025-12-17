@@ -6,6 +6,10 @@ REFERENCE_BW = 10000000
 DEFAULT_BW = 10000000
 MAX_PATHS = 1
 FLOW_PRIORITY = 100
+APP_ID = 0x13
+COOKIE_TTL = 120   # segundos sin uso
+GC_INTERVAL = 10   # cada cuánto revisar
+
 
 @dataclass
 class Paths:
@@ -32,9 +36,52 @@ class Controller13(app_manager.RyuApp):
         self.monitor_thread = hub.spawn(self._monitor)
         self.tree_ports = defaultdict(set)     # dpid -> puertos inter-switch que pertenecen al spanning tree
         self.tree_root = None
-        self.flow_cache = set()
         self.all_ports = defaultdict(set)   # dpid -> todos los puertos del switch
         self.lldp_ports = defaultdict(set)   # dpid -> puertos donde vi LLDP (trunks reales)
+        self.cookie_installed = defaultdict(set)   # cookie -> {dpid1, dpid2, ...}
+        self.cookie_path_nodes = {}                # cookie -> [dpid en orden del path]
+        self.cookie_last_seen = {}                 # cookie -> timestamp (para GC)
+        self.gc_thread = hub.spawn(self._cookie_gc)
+    def _cookie_gc(self):
+        while True:
+            now = time.time()
+            to_delete = [c for c, last in list(self.cookie_last_seen.items())
+                        if (now - last) > COOKIE_TTL]
+            for c in to_delete:
+                self.delete_cookie_everywhere(c)
+            hub.sleep(GC_INTERVAL)
+
+
+    def make_cookie(self, flow_type, ip_src, ip_dst):
+        base = f"{flow_type}|{ip_src}|{ip_dst}"
+        h = zlib.crc32(base.encode()) & 0xFFFFFFFF
+        return (APP_ID << 48) | h
+
+    def delete_flows_by_cookie(self, dp, cookie):
+        ofp = dp.ofproto
+        parser = dp.ofproto_parser
+        mod = parser.OFPFlowMod(
+            datapath=dp,
+            command=ofp.OFPFC_DELETE,
+            out_port=ofp.OFPP_ANY,
+            out_group=ofp.OFPG_ANY,
+            match=parser.OFPMatch(),
+            cookie=cookie,
+            cookie_mask=0xFFFFFFFFFFFFFFFF
+        )
+        dp.send_msg(mod)
+
+    def delete_cookie_everywhere(self, cookie):
+        for dpid in list(self.cookie_installed.get(cookie, set())):
+            dp = self.datapath_list.get(dpid)
+            if dp:
+                self.delete_flows_by_cookie(dp, cookie)
+
+        self.cookie_installed.pop(cookie, None)
+        self.cookie_path_nodes.pop(cookie, None)
+        self.cookie_last_seen.pop(cookie, None)
+
+
 
 
     def recompute_spanning_tree(self):
@@ -167,85 +214,85 @@ class Controller13(app_manager.RyuApp):
         return paths_n_ports
 
     def install_paths(self, src, first_port, dst, last_port, ip_src, ip_dst, type, pkt):
+        cookie = self.make_cookie(type, ip_src, ip_dst)
+        self.cookie_last_seen[cookie] = time.time()
+
         key = (src, first_port, dst, last_port)
         if key not in self.path_table or key not in self.path_with_ports_table:
             self.topology_discover(src, first_port, dst, last_port)
             self.topology_discover(dst, last_port, src, first_port)
 
-        for node in self.path_table[key][0].path:
+        nodes_in_path = self.path_table[key][0].path
+        self.cookie_path_nodes[cookie] = nodes_in_path
+
+
+        for node in nodes_in_path:
+            # ✅ ya instalé este “flujo general” en este switch
+            if node in self.cookie_installed[cookie]:
+                continue
 
             dp = self.datapath_list[node]
-            ofp = dp.ofproto
             ofp_parser = dp.ofproto_parser
-
-            actions = []
 
             in_port = self.path_with_ports_table[key][0][node][0]
             out_port = self.path_with_ports_table[key][0][node][1]
-                
             actions = [ofp_parser.OFPActionOutput(out_port)]
 
-            if type == 'IP':                      # nuevo caso único para IP
+            if type == 'IP':
                 match = ofp_parser.OFPMatch(
                     in_port=in_port,
                     eth_type=ether_types.ETH_TYPE_IP,
                     ipv4_src=ip_src,
-                    ipv4_dst=ip_dst)
-                installed = self.add_flow(dp, FLOW_PRIORITY, match, actions, idle_timeout=0)
-                if installed:
-                    self.logger.info(f"Path installed in sw {node}: {in_port}→{out_port}")
+                    ipv4_dst=ip_dst
+                )
+                self.add_flow(dp, FLOW_PRIORITY, match, actions, idle_timeout=0, cookie=cookie)
 
             elif type == 'ARP':
-                match_arp = ofp_parser.OFPMatch(in_port=in_port, eth_type=ether_types.ETH_TYPE_ARP,
-                                 arp_spa=ip_src, arp_tpa=ip_dst)
-                installed = self.add_flow(dp, FLOW_PRIORITY, match_arp, actions, idle_timeout=0)
-                if installed:
-                    self.logger.info(f"ARP path installed in sw {node}: {in_port}→{out_port}")
+                match_arp = ofp_parser.OFPMatch(
+                    in_port=in_port,
+                    eth_type=ether_types.ETH_TYPE_ARP,
+                    arp_spa=ip_src,
+                    arp_tpa=ip_dst
+                )
+                self.add_flow(dp, FLOW_PRIORITY, match_arp, actions, idle_timeout=0, cookie=cookie)
+            self.cookie_installed[cookie].add(node)
+
 
         return self.path_with_ports_table[key][0][src][1]
 
-    def _match_tuple(self, match):
-        # match.items() da pares (campo, valor). Lo ordenamos para que sea estable.
-        return tuple(sorted(match.items()))
-
-    def _actions_tuple(self, actions):
-        # Para baseline: solo usas OUTPUT. Hacemos clave estable.
-        out = []
-        for a in actions:
-            cls = a.__class__.__name__
-            if cls == "OFPActionOutput":
-                out.append(("OUTPUT", a.port, a.max_len))
-            else:
-                # fallback genérico
-                out.append((cls, repr(a)))
-        return tuple(out)
-
-    def add_flow(self, datapath, priority, match, actions, idle_timeout, buffer_id=None):
+    def add_flow(self, datapath, priority, match, actions, idle_timeout, buffer_id=None, cookie=0):
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
-
-        if not hasattr(self, "flow_cache"):
-            self.flow_cache = set()
-
-        key = (datapath.id, priority, self._match_tuple(match), self._actions_tuple(actions), idle_timeout, 0)
-        if key in self.flow_cache:
-            return False  # ya estaba
-        self.flow_cache.add(key)
 
         inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, actions)]
 
         if buffer_id is not None and buffer_id != ofproto.OFP_NO_BUFFER:
-            mod = parser.OFPFlowMod(datapath=datapath, buffer_id=buffer_id,
-                                    priority=priority, match=match,
-                                    idle_timeout=idle_timeout, hard_timeout=0,
-                                    instructions=inst)
+            mod = parser.OFPFlowMod(
+                datapath=datapath,
+                buffer_id=buffer_id,
+                priority=priority,
+                match=match,
+                idle_timeout=idle_timeout,
+                hard_timeout=0,
+                cookie=cookie,
+                cookie_mask=0,
+                instructions=inst
+            )
         else:
-            mod = parser.OFPFlowMod(datapath=datapath,
-                                    priority=priority, match=match,
-                                    idle_timeout=idle_timeout, hard_timeout=0,
-                                    instructions=inst)
+            mod = parser.OFPFlowMod(
+                datapath=datapath,
+                priority=priority,
+                match=match,
+                idle_timeout=idle_timeout,
+                hard_timeout=0,
+                cookie=cookie,
+                cookie_mask=0,
+                instructions=inst
+            )
+
         datapath.send_msg(mod)
         return True
+
 
     def topology_discover(self, src, first_port, dst, last_port):
         paths = self.find_paths_and_costs(src, dst)
@@ -385,6 +432,9 @@ class Controller13(app_manager.RyuApp):
             self.switches.append(switch_dpid)
             self.all_ports[switch_dp.id] = set(switch_dp.ports.keys())  # puertos conocidos por el datapath
 
+        self.cookie_installed.clear()
+        self.cookie_path_nodes.clear()
+        self.cookie_last_seen.clear()
         self.recompute_spanning_tree()
 
     @set_ev_cls(event.EventSwitchLeave, MAIN_DISPATCHER)
@@ -422,6 +472,12 @@ class Controller13(app_manager.RyuApp):
         except KeyError:
             self.logger.info("Link ya eliminado")
             return
+
+        affected_cookies = [c for c, nodes in list(self.cookie_path_nodes.items())
+                    if self._path_uses_link(nodes, s1, s2)]
+
+        for c in affected_cookies:
+            self.delete_cookie_everywhere(c)
 
         afectados = [key for key, path_list in self.path_table.items()
              if self._path_uses_link(path_list[0].path, s1, s2)]

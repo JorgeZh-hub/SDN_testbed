@@ -1,7 +1,7 @@
 # --- NO SUBIR DATA PESADA ---
 data/
 
-# resultados/capturas suelen ser grandes (pcaps, etc.)
+# resultados/
 results/
 
 # Python

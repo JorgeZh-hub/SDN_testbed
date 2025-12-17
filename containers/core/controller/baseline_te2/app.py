@@ -1,0 +1,349 @@
+#!/usr/bin/python3
+from __future__ import annotations
+
+import os
+import time
+from typing import Optional
+
+from ryu.base import app_manager
+from ryu.controller import ofp_event
+from ryu.controller.handler import CONFIG_DISPATCHER, MAIN_DISPATCHER, DEAD_DISPATCHER
+from ryu.controller.handler import set_ev_cls
+from ryu.ofproto import ofproto_v1_3
+from ryu.lib import hub
+from ryu.lib.packet import packet
+from ryu.lib.packet import ethernet
+from ryu.lib.packet import ipv4
+from ryu.lib.packet import arp
+from ryu.lib.packet import tcp, udp, icmp
+
+from ryu.topology import event
+
+from ryu import cfg
+
+from .utils import FlowDescriptor
+from .flow_manager import FlowManager
+from .topology_manager import TopologyManager
+from .path_engine import PathEngine
+from .stats_manager import StatsManager
+from .te_engine import TEEngine
+from .config_loader import load_yaml, parse_links_capacity
+from .classifier import PriorityClassifier
+
+# ---------------- CLI options ----------------
+CONF = cfg.CONF
+CONF.register_opts([
+    cfg.StrOpt("top_config", default="", help="YAML con links (capacidad)"),
+    cfg.StrOpt("te_config", default="", help="Classifiers"),
+    cfg.FloatOpt("te_period", default=5.0),
+    cfg.FloatOpt("portstats_period", default=1.0),
+    cfg.FloatOpt("flowstats_period", default=5.0),
+    cfg.FloatOpt("default_link_capacity", default=100.0),
+    cfg.FloatOpt("hot_th", default=0.85),
+    cfg.IntOpt("hot_n", default=2),
+    cfg.FloatOpt("alpha_link", default=0.3),
+    cfg.FloatOpt("alpha_flow", default=0.3),
+    cfg.FloatOpt("cooldown", default=45.0),
+    cfg.FloatOpt("K", default=5.0),
+    cfg.FloatOpt("safety_factor", default=1.2),
+    cfg.FloatOpt("delta_hot", default=0.05),
+    cfg.FloatOpt("delta_global", default=0.02),
+    cfg.FloatOpt("r_min_mbps", default=0.1),
+    cfg.IntOpt("app_id", default=0xBEEF),
+    cfg.IntOpt("flow_priority", default=20000),
+    cfg.BoolOpt("barrier", default=True),
+])
+
+
+class ReactiveIoTTE13(app_manager.RyuApp):
+    OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # --- config ---
+        top_path = CONF.top_config
+        te_path = CONF.te_config
+
+        te_data = load_yaml(te_path) if te_path else {}
+        top_data = load_yaml(top_path) if top_path else {}
+
+        self.cap_db = parse_links_capacity(te_data)
+        self.classifier = PriorityClassifier.from_cfg(te_data)
+
+        self.topo = TopologyManager(self.logger)
+        self.flow_mgr = FlowManager(
+            topo=self.topo,
+            logger=self.logger,
+            app_id=CONF.app_id,
+            priority_base=CONF.flow_priority,
+            barrier=CONF.barrier,
+            classifier=self.classifier,
+        )
+        self.stats = StatsManager(
+            topo=self.topo,
+            flow_mgr=self.flow_mgr,
+            logger=self.logger,
+            default_capacity_mbps=CONF.default_link_capacity,
+            alpha_link=CONF.alpha_link,
+            alpha_flow=CONF.alpha_flow,
+            hot_th=CONF.hot_th,
+            hot_n=CONF.hot_n,
+            portstats_period=CONF.portstats_period,
+            flowstats_period=CONF.flowstats_period,
+            app_id=CONF.app_id,
+        )
+        self.path_engine = PathEngine(self.topo, self.stats, self.logger)
+        self.te = TEEngine(
+            topo=self.topo,
+            stats=self.stats,
+            path_engine=self.path_engine,
+            flow_mgr=self.flow_mgr,
+            logger=self.logger,
+            te_period=CONF.te_period,
+            cooldown_s=CONF.cooldown,
+            hot_th=CONF.hot_th,
+            delta_hot=CONF.delta_hot,
+            delta_global=CONF.delta_global,
+            K=CONF.K,
+            safety_factor=CONF.safety_factor,
+            r_min_mbps=CONF.r_min_mbps,
+        )
+
+        self.logger.info(
+            "[INIT] ReactiveIoTTE13 top_config=%s te_config=%s rules=%d caps=%d",
+            top_path or "-",
+            te_path or "-",
+            len(self.classifier.rules),
+            len(self.cap_db.cap_by_portpair),
+        )
+        self.logger.info(
+            "[INIT] periods te=%ss portstats=%ss flowstats=%ss app_id=0x%X prio=%d",
+            CONF.te_period,
+            CONF.portstats_period,
+            CONF.flowstats_period,
+            CONF.app_id,
+            CONF.flow_priority,
+        )
+
+        self._last_pkt_log = 0.0
+        self.PKT_LOG_INTERVAL = 2.0
+
+        self._monitor_thread = hub.spawn(self._monitor_loop)
+
+    # ---------------- Monitor loop ----------------
+    def _monitor_loop(self):
+        self.logger.info("[MONITOR] loop started")
+        # Two periodic loops in one thread to keep things simple
+        last_port = 0.0
+        last_flow = 0.0
+        last_te = 0.0
+        while True:
+            t = time.time()
+            if t - last_port >= CONF.portstats_period:
+                last_port = t
+                self.stats.request_port_stats()
+            if t - last_flow >= CONF.flowstats_period:
+                last_flow = t
+                self.stats.request_flow_stats()
+            if t - last_te >= CONF.te_period:
+                last_te = t
+                try:
+                    self.te.run_once()
+                except Exception as e:
+                    self.logger.exception("TE error: %s", e)
+            hub.sleep(0.2)
+
+    # ---------------- Switch lifecycle ----------------
+    @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
+    def switch_features_handler(self, ev):
+        dp = ev.msg.datapath
+        self.topo.register_dp(dp)
+        self.logger.info("[SWITCH] features dpid=%s", dp.id)
+
+        # table-miss (send to controller)
+        ofp = dp.ofproto
+        parser = dp.ofproto_parser
+        match = parser.OFPMatch()
+        actions = [parser.OFPActionOutput(ofp.OFPP_CONTROLLER, ofp.OFPCML_NO_BUFFER)]
+        inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
+        mod = parser.OFPFlowMod(datapath=dp, priority=0, match=match, instructions=inst)
+        dp.send_msg(mod)
+
+        # request PortDesc to learn port names
+        req = parser.OFPPortDescStatsRequest(dp, 0)
+        dp.send_msg(req)
+
+    @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
+    def _state_change(self, ev):
+        dp = ev.datapath
+        if ev.state == MAIN_DISPATCHER:
+            self.topo.register_dp(dp)
+        elif ev.state == DEAD_DISPATCHER:
+            self.topo.unregister_dp(dp.id)
+            self.logger.warning("[SWITCH] disconnected dpid=%s", dp.id)
+
+    @set_ev_cls(ofp_event.EventOFPPortDescStatsReply, MAIN_DISPATCHER)
+    def port_desc_reply_handler(self, ev):
+            dp = ev.msg.datapath
+            self.topo.update_port_desc(dp.id, ev.msg.body)
+
+            # Re-intenta mapear capacidades para links ya descubiertos (por si LinkAdd llegó antes de PortDesc)
+            for (u,v), (u_p, v_p) in list(self.topo.link_ports.items()):
+                spn = self.topo.get_port_name(u, u_p) or ""
+                dpn = self.topo.get_port_name(v, v_p) or ""
+                cap = self.cap_db.capacity_for(spn, dpn)
+                if cap is not None:
+                    self.stats.set_capacity((u,v), cap)
+                    self.stats.set_capacity((v,u), cap)
+
+    # ---------------- Topology events (LLDP discovery) ----------------
+    @set_ev_cls(event.EventLinkAdd)
+    def _link_add(self, ev):
+        s = ev.link.src
+        d = ev.link.dst
+        self.topo.add_link(s.dpid, s.port_no, d.dpid, d.port_no)
+        self.logger.info(
+            "[LINK] add %s:%s -> %s:%s",
+            s.dpid,
+            s.port_no,
+            d.dpid,
+            d.port_no,
+        )
+
+        # Try to map capacity from YAML via port names
+        spn = self.topo.get_port_name(s.dpid, s.port_no) or ""
+        dpn = self.topo.get_port_name(d.dpid, d.port_no) or ""
+        cap = self.cap_db.capacity_for(spn, dpn)
+        if cap is not None:
+            self.stats.set_capacity((s.dpid, d.dpid), cap)
+            self.stats.set_capacity((d.dpid, s.dpid), cap)
+
+    @set_ev_cls(event.EventLinkDelete)
+    def _link_del(self, ev):
+        s = ev.link.src
+        d = ev.link.dst
+        self.topo.del_link(s.dpid, d.dpid)
+        self.logger.warning(
+            "[LINK] del %s:%s -> %s:%s",
+            s.dpid,
+            s.port_no,
+            d.dpid,
+            d.port_no,
+        )
+
+        # Optional: clean cookies affected by this link (simple)
+        e1 = (s.dpid, d.dpid)
+        e2 = (d.dpid, s.dpid)
+        affected = set(self.flow_mgr.link_cookies.get(e1, set())) | set(self.flow_mgr.link_cookies.get(e2, set()))
+        for c in affected:
+            path = self.flow_mgr.cookie_path.get(c, None)
+            if path:
+                self.flow_mgr.delete_cookie_exact(c, dpids=path)
+            self.flow_mgr._unregister_cookie(c)
+
+    # ---------------- Stats replies ----------------
+    @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER)
+    def _port_stats_reply(self, ev):
+        self.stats.handle_port_stats_reply(ev.msg.datapath, ev.msg)
+
+    @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
+    def _flow_stats_reply(self, ev):
+        self.stats.handle_flow_stats_reply(ev.msg.datapath, ev.msg)
+
+    # ---------------- PacketIn baseline ----------------
+    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+    def _packet_in(self, ev):
+        msg = ev.msg
+        dp = msg.datapath
+        ofp = dp.ofproto
+        parser = dp.ofproto_parser
+
+        in_port = msg.match.get("in_port", 0)
+        pkt = packet.Packet(msg.data)
+        eth = pkt.get_protocol(ethernet.ethernet)
+        if eth is None:
+            return
+        if eth.ethertype == 0x88cc:
+            # LLDP
+            return
+
+        dpid = dp.id
+        now = time.time()
+        if now - self._last_pkt_log >= self.PKT_LOG_INTERVAL:
+            self._last_pkt_log = now
+            self.logger.info(
+                "[PKTIN] sw=%s in=%s eth=%s src=%s dst=%s",
+                dpid,
+                in_port,
+                hex(eth.ethertype),
+                eth.src,
+                eth.dst,
+            )
+        self.topo.learn_mac(dpid, eth.src, in_port)
+
+        # ARP: flood via tree
+        a = pkt.get_protocol(arp.arp)
+        if a:
+            out_ports = self.topo.flood_ports_on_tree(dpid, in_port)
+            actions = [parser.OFPActionOutput(p) for p in out_ports]
+            out = parser.OFPPacketOut(datapath=dp, buffer_id=ofp.OFP_NO_BUFFER,
+                                      in_port=in_port, actions=actions, data=msg.data)
+            dp.send_msg(out)
+            return
+
+        ip4 = pkt.get_protocol(ipv4.ipv4)
+        if ip4 is None:
+            # Non-IP: simple L2 forwarding
+            out_port = self.topo.lookup_mac_port(dpid, eth.dst)
+            if out_port is None:
+                out_ports = self.topo.flood_ports_on_tree(dpid, in_port)
+                actions = [parser.OFPActionOutput(p) for p in out_ports]
+            else:
+                actions = [parser.OFPActionOutput(out_port)]
+            out = parser.OFPPacketOut(datapath=dp, buffer_id=ofp.OFP_NO_BUFFER,
+                                      in_port=in_port, actions=actions, data=msg.data)
+            dp.send_msg(out)
+            return
+
+        # IP flow: parse L4
+        l4 = pkt.get_protocol(tcp.tcp) or pkt.get_protocol(udp.udp) or pkt.get_protocol(icmp.icmp)
+
+        # resolve src/dst switch (L2 learning)
+        src_sw = dpid
+        dst_sw = None
+        # find dst MAC location across switches (best effort)
+        for sw, table in self.topo.mac_to_port.items():
+            if eth.dst in table:
+                dst_sw = sw
+                break
+        if dst_sw is None:
+            # unknown -> flood
+            out_ports = self.topo.flood_ports_on_tree(dpid, in_port)
+            actions = [parser.OFPActionOutput(p) for p in out_ports]
+            out = parser.OFPPacketOut(datapath=dp, buffer_id=ofp.OFP_NO_BUFFER,
+                                      in_port=in_port, actions=actions, data=msg.data)
+            dp.send_msg(out)
+            return
+
+        fk = self.flow_mgr.build_flow_key(eth, ip4, l4)
+        dscp = (ip4.tos & 0xFC) >> 2
+        desc = FlowDescriptor(src_dpid=src_sw, dst_dpid=dst_sw, key=fk, dscp=dscp)
+        cookie = self.flow_mgr.get_or_create_cookie(desc)
+
+        # install baseline path (hop-count == cost 1)
+        path = self.path_engine.shortest_path(src_sw, dst_sw)
+        if not path:
+            return
+        self.flow_mgr.install_path(desc, cookie, path)
+
+        # forward this packet along first hop
+        if len(path) > 1:
+            nxt = path[1]
+            out_port = self.topo.neigh.get(src_sw, {}).get(nxt)
+            if out_port is None:
+                return
+            actions = [parser.OFPActionOutput(out_port)]
+            out = parser.OFPPacketOut(datapath=dp, buffer_id=ofp.OFP_NO_BUFFER,
+                                      in_port=in_port, actions=actions, data=msg.data)
+            dp.send_msg(out)
