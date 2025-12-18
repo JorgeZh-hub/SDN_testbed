@@ -387,5 +387,18 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         if not path:
             self.logger.warning("[PATH] no path src=%s dst=%s", src_sw, dst_sw)
             return
-        # Install flow rules for the path
-        self.flow_mgr.install_path(desc, cookie, path, self.flow_mgr.hosts[eth.dst][1])
+        
+        
+        already = (cookie in self.flow_mgr.cookie_path and self.flow_mgr.cookie_path[cookie] == path)
+
+        if not already:
+            self.flow_mgr.install_path(desc, cookie, path, self.flow_mgr.hosts[eth.dst][1])
+        else:
+            self.logger.debug("[FLOW] skip reinstall cookie=%s path=%s", hex(cookie), path)
+
+    @set_ev_cls(ofp_event.EventOFPErrorMsg, MAIN_DISPATCHER)
+    def error_msg_handler(self, ev):
+        msg = ev.msg
+        self.logger.error("[OF-ERROR] dpid=%s type=0x%x code=0x%x data=%s",
+                        msg.datapath.id, msg.type, msg.code, msg.data.hex())
+

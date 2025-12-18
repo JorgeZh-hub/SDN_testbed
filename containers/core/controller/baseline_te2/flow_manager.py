@@ -192,10 +192,10 @@ class FlowManager:
         k = desc.key
         if k.eth_type is not None:
             match_kwargs["eth_type"] = k.eth_type
-        if k.src_mac:
+        """if k.src_mac:
             match_kwargs["eth_src"] = k.src_mac
         if k.dst_mac:
-            match_kwargs["eth_dst"] = k.dst_mac
+            match_kwargs["eth_dst"] = k.dst_mac"""
         if k.ip_src:
             match_kwargs["ipv4_src"] = k.ip_src
         if k.ip_dst:
@@ -210,6 +210,11 @@ class FlowManager:
             field = ("tcp_" if k.ip_proto == 6 else "udp_") + stable_side
             match_kwargs[field] = int(stable_port)
             prio = self.priority_base + 10  # CRIT gana a BE agregado
+        
+        # si es BE, hacer el match más "L3"
+        """if cls == "BE":
+            match_kwargs.pop("eth_src", None)
+            match_kwargs.pop("eth_dst", None)"""
 
 
         for i in range(len(path)):
