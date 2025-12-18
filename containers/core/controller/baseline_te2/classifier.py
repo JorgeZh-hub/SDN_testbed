@@ -1,7 +1,7 @@
 # classifier.py
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .utils import ip_in_any_subnet, mac_oui
 
@@ -62,6 +62,50 @@ class PriorityClassifier:
             if self._match_rule(rule.match, src_mac, dst_mac, ip_src, ip_dst, ip_proto, l4_src, l4_dst, dscp):
                 return rule.out_class
         return "BE"
+
+    def classify_detail(self,
+                        src_mac: str,
+                        dst_mac: str,
+                        ip_src: Optional[str],
+                        ip_dst: Optional[str],
+                        ip_proto: Optional[int],
+                        l4_src: Optional[int],
+                        l4_dst: Optional[int],
+                        dscp: Optional[int]) -> Tuple[str, Optional[str], Optional[int], Optional[str]]:
+        """
+        Retorna:
+          (out_class, stable_side, stable_port, rule_name)
+        stable_side: "src" | "dst" | None
+        stable_port: int | None
+        """
+        for rule in self.rules:
+            if self._match_rule(rule.match, src_mac, dst_mac, ip_src, ip_dst, ip_proto, l4_src, l4_dst, dscp):
+                stable_side = None
+                stable_port = None
+
+                # Solo tiene sentido puerto estable si la regla es CRIT y estamos en TCP/UDP
+                if rule.out_class == "CRIT" and ip_proto in (6, 17):
+                    m = rule.match or {}
+
+                    # Si la regla define explícitamente dst o src, eso manda.
+                    if "l4_dst_ports" in m and l4_dst is not None:
+                        stable_side, stable_port = "dst", int(l4_dst)
+
+                    elif "l4_src_ports" in m and l4_src is not None:
+                        stable_side, stable_port = "src", int(l4_src)
+
+                    elif "l4_any_ports" in m:
+                        allowed = [int(x) for x in m.get("l4_any_ports", [])]
+
+                        # Preferimos dst si ambos cumplen
+                        if l4_dst is not None and int(l4_dst) in allowed:
+                            stable_side, stable_port = "dst", int(l4_dst)
+                        elif l4_src is not None and int(l4_src) in allowed:
+                            stable_side, stable_port = "src", int(l4_src)
+
+                return rule.out_class, stable_side, stable_port, rule.name
+
+        return "BE", None, None, None
 
     def _match_rule(self, m: Dict[str, Any],
                     src_mac: str, dst_mac: str,

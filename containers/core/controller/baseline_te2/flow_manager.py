@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, Set, Tuple, Optional, List
+from typing import Dict, Set, Tuple, Optional, List, Any
+
 
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib.packet import ethernet, ipv4, tcp, udp, icmp
@@ -36,10 +37,14 @@ class FlowManager:
         self.cookie_path: Dict[int, List[int]] = {}          # cookie -> [dpids]
 
         # flow_key -> active cookie
-        self._active_cookie_by_key: Dict[FlowKey, int] = {}
+        self._active_cookie_by_key: Dict[Any, int] = {}
+
+        # Host location (first seen): mac -> (dpid, port)
+        self.hosts: Dict[str, Tuple[int, int]] = {}
+
 
     # ---------- Cookie ----------
-    def cookie_for_key(self, key: FlowKey, version: int) -> int:
+    def cookie_for_key(self, key: Any, version: int) -> int:
         h = stable_u32_hash(key)
         cookie = (self.app_id << 48) | ((h & 0xFFFFFFFF) << 16) | (version & 0xFFFF)
         return cookie & 0xFFFFFFFFFFFFFFFF
@@ -58,11 +63,29 @@ class FlowManager:
         return base | ver
 
     def get_or_create_cookie(self, desc: FlowDescriptor) -> int:
-        cur = self._active_cookie_by_key.get(desc.key)
+        cls, stable_side, stable_port, rule = self.classify_detail(desc, desc.dscp)
+        ckey = self._cookie_key(desc, cls, stable_side, stable_port)
+
+        cur = self._active_cookie_by_key.get(ckey)
         if cur is None:
-            cur = self.cookie_for_key(desc.key, 0)
-            self._active_cookie_by_key[desc.key] = cur
+            cur = self.cookie_for_key(ckey, 0)
+            self._active_cookie_by_key[ckey] = cur
+
+            # Guardamos clase temprano (evita recalcular y ayuda a TE/stats)
+            self.cookie_class[cur] = cls
+
+            k = desc.key
+            self.log.info(
+                "[CLASS] new_cookie=%s class=%s rule=%s stable=%s:%s 5t=%s:%s -> %s:%s proto=%s",
+                hex(cur), cls, rule or "-",
+                stable_side or "-", stable_port if stable_port is not None else "-",
+                k.ip_src or "-", k.l4_src if k.l4_src is not None else "-",
+                k.ip_dst or "-", k.l4_dst if k.l4_dst is not None else "-",
+                k.ip_proto if k.ip_proto is not None else "-"
+            )
+
         return cur
+
 
     # ---------- Classification ----------
     def classify(self, desc: FlowDescriptor, dscp: Optional[int]) -> str:
@@ -77,6 +100,42 @@ class FlowManager:
             l4_dst=k.l4_dst,
             dscp=dscp
         )
+
+    def classify_detail(self, desc: FlowDescriptor, dscp: Optional[int]):
+        """
+        Retorna (cls, stable_side, stable_port, rule_name)
+        stable_side: "src" | "dst" | None
+        """
+        k = desc.key
+        if hasattr(self.classifier, "classify_detail"):
+            return self.classifier.classify_detail(
+                src_mac=k.src_mac,
+                dst_mac=k.dst_mac,
+                ip_src=k.ip_src,
+                ip_dst=k.ip_dst,
+                ip_proto=k.ip_proto,
+                l4_src=k.l4_src,
+                l4_dst=k.l4_dst,
+                dscp=dscp
+            )
+        # fallback si por alguna razón no existe
+        return self.classify(desc, dscp), None, None, None
+
+    def _cookie_key(self, desc: FlowDescriptor, cls: str,
+                    stable_side: Optional[str], stable_port: Optional[int]) -> Any:
+        """
+        Debe alinearse con el MATCH instalado.
+        - BE: no incluye L4
+        - CRIT con puerto estable: incluye (stable_side, stable_port)
+        """
+        k = desc.key
+        base = (k.eth_type, k.src_mac, k.dst_mac, k.ip_src, k.ip_dst, k.ip_proto)
+
+        if cls == "CRIT" and stable_side and stable_port and k.ip_proto in (6, 17):
+            return base + (stable_side, int(stable_port))
+
+        return base
+
 
     # ---------- Rate updates ----------
     def update_cookie_rate(self, cookie: int, observed_mbps: float, alpha: float = 0.3):
@@ -143,10 +202,15 @@ class FlowManager:
             match_kwargs["ipv4_dst"] = k.ip_dst
         if k.ip_proto is not None:
             match_kwargs["ip_proto"] = int(k.ip_proto)
-        """if k.l4_src is not None and k.ip_proto in (6,17):
-            match_kwargs["tcp_src" if k.ip_proto==6 else "udp_src"] = int(k.l4_src)
-        if k.l4_dst is not None and k.ip_proto in (6,17):
-            match_kwargs["tcp_dst" if k.ip_proto==6 else "udp_dst"] = int(k.l4_dst)"""
+        # Clasificación + puerto estable (si aplica)
+        cls, stable_side, stable_port, rule = self.classify_detail(desc, desc.dscp)
+        # Si es CRIT y hay puerto estable, metemos SOLO ese puerto (no el efímero)
+        prio = self.priority_base
+        if cls == "CRIT" and stable_side and stable_port is not None and k.ip_proto in (6, 17):
+            field = ("tcp_" if k.ip_proto == 6 else "udp_") + stable_side
+            match_kwargs[field] = int(stable_port)
+            prio = self.priority_base + 10  # CRIT gana a BE agregado
+
 
         for i in range(len(path)):
             u = path[i]
@@ -176,7 +240,7 @@ class FlowManager:
                 command=ofp.OFPFC_ADD,
                 idle_timeout=idle_timeout,
                 hard_timeout=hard_timeout,
-                priority=self.priority_base,
+                priority=prio,
                 match=match,
                 instructions=inst
             )
@@ -185,20 +249,21 @@ class FlowManager:
         # Update indexes
         self.cookie_desc[cookie] = desc
         if cookie not in self.cookie_class:
-            self.cookie_class[cookie] = self.classify(desc, desc.dscp)
+            self.cookie_class[cookie] = cls
+
         self._register_cookie_path(cookie, path)
         k = desc.key
         self.log.info(
-            "[FLOW] install cookie=%s class=%s src=%s:%s dst=%s:%s proto=%s path=%s",
+            "[FLOW] install cookie=%s class=%s stable=%s:%s src=%s:%s dst=%s:%s proto=%s path=%s",
             hex(cookie),
             self.cookie_class.get(cookie, "BE"),
-            k.ip_src or "-",
-            k.l4_src if k.l4_src is not None else "-",
-            k.ip_dst or "-",
-            k.l4_dst if k.l4_dst is not None else "-",
+            stable_side or "-", stable_port if stable_port is not None else "-",
+            k.ip_src or "-", k.l4_src if k.l4_src is not None else "-",
+            k.ip_dst or "-", k.l4_dst if k.l4_dst is not None else "-",
             k.ip_proto if k.ip_proto is not None else "-",
             path,
         )
+
 
     def delete_cookie_exact(self, cookie: int, dpids: Optional[List[int]] = None):
         """Borra reglas con cookie exacta en switches del path (o todos si dpids None)."""
@@ -223,6 +288,7 @@ class FlowManager:
     def reroute_cookie(self, old_cookie: int, new_path: List[int]) -> Optional[int]:
         """Make-before-break: instala versión nueva, barrier, borra versión vieja, actualiza índices."""
         desc = self.cookie_desc.get(old_cookie)
+        dst_mac = desc.key.dst_mac if desc else None
         if desc is None:
             return None
         cls = self.cookie_class.get(old_cookie, "BE")
@@ -231,7 +297,7 @@ class FlowManager:
         new_cookie = self.next_cookie(old_cookie)
 
         # install new
-        self.install_path(desc, new_cookie, new_path)
+        self.install_path(desc, new_cookie, new_path, self.hosts[dst_mac][1])
         # barrier on all dps in new path
         if self.use_barrier:
             for dpid in set(new_path):
@@ -256,7 +322,10 @@ class FlowManager:
         self.cookie_class[new_cookie] = cls
         self.cookie_rate_mbps[new_cookie] = rate
         self.cookie_last_move[new_cookie] = last
-        self._active_cookie_by_key[desc.key] = new_cookie
+        cls2, s_side, s_port, _ = self.classify_detail(desc, desc.dscp)
+        ckey = self._cookie_key(desc, cls2, s_side, s_port)
+        self._active_cookie_by_key[ckey] = new_cookie
+
 
         self.log.info(
             "[TE] reroute cookie=%s->%s class=%s rate=%.3f old_path=%s new_path=%s",
@@ -269,6 +338,10 @@ class FlowManager:
         )
 
         return new_cookie
+
+    def learn_host(self, dpid: int, src_mac: str, in_port: int):
+        if src_mac not in self.hosts:
+            self.hosts[src_mac] = (dpid, in_port)
 
     # ---------- Helper to create FlowDescriptor from parsed packet ----------
     @staticmethod
@@ -289,3 +362,4 @@ class FlowManager:
             if hasattr(l4, "dst_port"):
                 l4_dst = int(l4.dst_port)
         return FlowKey(eth_type, src_mac, dst_mac, ip_src, ip_dst, ip_proto, l4_src, l4_dst)
+

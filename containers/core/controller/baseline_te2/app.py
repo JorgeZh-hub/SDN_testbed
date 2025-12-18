@@ -317,13 +317,12 @@ class ReactiveIoTTE13(app_manager.RyuApp):
                 eth.dst,
             )
         self.topo.learn_mac(dpid, eth.src, in_port)
-        self.topo.learn_host(dpid, eth.src, in_port)
+        self.flow_mgr.learn_host(dpid, eth.src, in_port)
 
         # ARP: flood via tree
         a = pkt.get_protocol(arp.arp)
         if a:
             if a.opcode == arp.ARP_REQUEST:
-                self.logger.info("ARP_REQUEST")
                 out_ports = self.topo.flood_ports_on_tree(dpid, in_port)
                 actions = [parser.OFPActionOutput(p) for p in out_ports]
                 out = parser.OFPPacketOut(datapath=dp, buffer_id=ofp.OFP_NO_BUFFER,
@@ -353,11 +352,11 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         # resolve src/dst switch (L2 learning)
         src_sw = dpid
         dst_sw = None
-        hosts_snapshot = dict(self.topo.hosts)
+        hosts_snapshot = dict(self.flow_mgr.hosts)
         #self.logger.info("[L2] lookup dst_mac=%s hosts=%s", eth.dst, hosts_snapshot)
         # find dst MAC location across switches (best effort) using hosts first
-        if eth.dst in self.topo.hosts:
-            dst_sw = self.topo.hosts[eth.dst][0]
+        if eth.dst in self.flow_mgr.hosts:
+            dst_sw = self.flow_mgr.hosts[eth.dst][0]
         else:
             for sw, table in self.topo.mac_to_port.items():
                 if eth.dst in table:
@@ -369,7 +368,7 @@ class ReactiveIoTTE13(app_manager.RyuApp):
             self.logger.info(
                 "[L2] dst_mac unknown; mac_table=%s hosts=%s flood_ports=%s",
                 dict(self.topo.mac_to_port),
-                dict(self.topo.hosts),
+                dict(self.flow_mgr.hosts),
                 out_ports,
             )
             actions = [parser.OFPActionOutput(p) for p in out_ports]
@@ -389,4 +388,4 @@ class ReactiveIoTTE13(app_manager.RyuApp):
             self.logger.warning("[PATH] no path src=%s dst=%s", src_sw, dst_sw)
             return
         # Install flow rules for the path
-        self.flow_mgr.install_path(desc, cookie, path, self.topo.hosts[eth.dst][1])
+        self.flow_mgr.install_path(desc, cookie, path, self.flow_mgr.hosts[eth.dst][1])

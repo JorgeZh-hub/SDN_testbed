@@ -31,8 +31,7 @@ class TopologyManager:
 
         # MAC learning: mac -> (dpid,port)
         self.mac_to_port: Dict[int, Dict[str, int]] = defaultdict(dict)
-        # Host location (first seen): mac -> (dpid, port)
-        self.hosts: Dict[str, Tuple[int, int]] = {}
+        
 
     # ---------------- Datapaths & Ports ----------------
     def register_dp(self, dp):
@@ -139,10 +138,6 @@ class TopologyManager:
     # ---------------- L2 learning helpers ----------------
     def learn_mac(self, dpid: int, src_mac: str, in_port: int):
         self.mac_to_port[dpid][src_mac] = in_port
-
-    def learn_host(self, dpid: int, src_mac: str, in_port: int):
-        if src_mac not in self.hosts:
-            self.hosts[src_mac] = (dpid, in_port)
 
     def lookup_mac_port(self, dpid: int, dst_mac: str) -> Optional[int]:
         return self.mac_to_port.get(dpid, {}).get(dst_mac)
