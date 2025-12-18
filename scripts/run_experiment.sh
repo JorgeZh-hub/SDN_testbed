@@ -364,7 +364,7 @@ start_controller() {
         fi
     ) | tee -a "$log_file"
 
-    local run_cmd=("${DOCKER[@]}" run -d --rm --name "$RYU_CONTAINER_NAME" --net=host)
+    local run_cmd=("${DOCKER[@]}" run -d --rm --name "$RYU_CONTAINER_NAME" -w /app --net=host -e PYTHONPATH=/app)
     for v in "${ctrl_volumes[@]}"; do
         run_cmd+=(-v "$v")
     done

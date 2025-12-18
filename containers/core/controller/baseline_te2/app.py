@@ -33,7 +33,7 @@ from .classifier import PriorityClassifier
 # ---------------- CLI options ----------------
 CONF = cfg.CONF
 CONF.register_opts([
-    cfg.StrOpt("top_config", default="", help="YAML con links (capacidad)"),
+    cfg.StrOpt("top_config", default="", help="YAML with links"),
     cfg.StrOpt("te_config", default="", help="Classifiers"),
     cfg.FloatOpt("te_period", default=5.0),
     cfg.FloatOpt("portstats_period", default=1.0),
@@ -68,7 +68,7 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         te_data = load_yaml(te_path) if te_path else {}
         top_data = load_yaml(top_path) if top_path else {}
 
-        self.cap_db = parse_links_capacity(te_data)
+        self.cap_db = parse_links_capacity(top_data)
         self.classifier = PriorityClassifier.from_cfg(te_data)
 
         self.topo = TopologyManager(self.logger)
@@ -138,6 +138,8 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         last_port = 0.0
         last_flow = 0.0
         last_te = 0.0
+        last_diag = 0.0
+        diag_interval = 15.0
         while True:
             t = time.time()
             if t - last_port >= CONF.portstats_period:
@@ -152,6 +154,37 @@ class ReactiveIoTTE13(app_manager.RyuApp):
                     self.te.run_once()
                 except Exception as e:
                     self.logger.exception("TE error: %s", e)
+            if t - last_diag >= diag_interval:
+                last_diag = t
+                dpids = sorted(self.topo.datapaths.keys())
+                tree_ports = {dpid: sorted(ports) for dpid, ports in self.topo.tree_ports.items()}
+                self.logger.info(
+                    "[NET] dps=%s links=%s tree_root=%s tree_ports=%s",
+                    dpids,
+                    len(self.topo.link_ports),
+                    self.topo.tree_root,
+                    tree_ports,
+                )
+                edge_stats = []
+                for e, (u_p, v_p) in self.topo.link_ports.items():
+                    u, v = e
+                    cap = self.stats.capacity_mbps(e)
+                    load = self.stats.link_load_mbps.get(e, 0.0)
+                    util = (load / cap) if cap > 0 else 0.0
+                    u_name = self.topo.get_port_name(u, u_p) if u_p is not None else ""
+                    v_name = self.topo.get_port_name(v, v_p) if v_p is not None else ""
+                    hot = self.stats.is_hot(e)
+                    edge_stats.append((util, f"{u}->{v}", u_name, v_name, cap, load, hot))
+                edge_stats.sort(key=lambda x: x[0], reverse=True)
+                top_edges = edge_stats[:10]
+                self.logger.info(
+                    "[LINKS] top_util=%s flows=%s",
+                    top_edges,
+                    len(self.flow_mgr.cookie_path),
+                )
+                hot_edges = [e for e in edge_stats if e[6]]
+                if hot_edges:
+                    self.logger.info("[LINKS] hot=%s", hot_edges)
             hub.sleep(0.2)
 
     # ---------------- Switch lifecycle ----------------
@@ -187,7 +220,6 @@ class ReactiveIoTTE13(app_manager.RyuApp):
     def port_desc_reply_handler(self, ev):
             dp = ev.msg.datapath
             self.topo.update_port_desc(dp.id, ev.msg.body)
-
             # Re-intenta mapear capacidades para links ya descubiertos (por si LinkAdd llegó antes de PortDesc)
             for (u,v), (u_p, v_p) in list(self.topo.link_ports.items()):
                 spn = self.topo.get_port_name(u, u_p) or ""
@@ -262,13 +294,17 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         in_port = msg.match.get("in_port", 0)
         pkt = packet.Packet(msg.data)
         eth = pkt.get_protocol(ethernet.ethernet)
+
+        # IPv6 drop
+        if eth.ethertype == 0x86dd:
+            return
         if eth is None:
             return
         if eth.ethertype == 0x88cc:
-            # LLDP
             return
 
         dpid = dp.id
+        
         now = time.time()
         if now - self._last_pkt_log >= self.PKT_LOG_INTERVAL:
             self._last_pkt_log = now
@@ -281,20 +317,25 @@ class ReactiveIoTTE13(app_manager.RyuApp):
                 eth.dst,
             )
         self.topo.learn_mac(dpid, eth.src, in_port)
+        self.topo.learn_host(dpid, eth.src, in_port)
 
         # ARP: flood via tree
         a = pkt.get_protocol(arp.arp)
         if a:
-            out_ports = self.topo.flood_ports_on_tree(dpid, in_port)
-            actions = [parser.OFPActionOutput(p) for p in out_ports]
-            out = parser.OFPPacketOut(datapath=dp, buffer_id=ofp.OFP_NO_BUFFER,
-                                      in_port=in_port, actions=actions, data=msg.data)
-            dp.send_msg(out)
-            return
+            if a.opcode == arp.ARP_REQUEST:
+                self.logger.info("ARP_REQUEST")
+                out_ports = self.topo.flood_ports_on_tree(dpid, in_port)
+                actions = [parser.OFPActionOutput(p) for p in out_ports]
+                out = parser.OFPPacketOut(datapath=dp, buffer_id=ofp.OFP_NO_BUFFER,
+                                        in_port=in_port, actions=actions, data=msg.data)
+                
+                #self.logger.info("Action taked: %s", actions)
+                dp.send_msg(out)
+                return
 
         ip4 = pkt.get_protocol(ipv4.ipv4)
         if ip4 is None:
-            # Non-IP: simple L2 forwarding
+            # Non-IP: simple L2 forwarding (ARP-REPLIES)
             out_port = self.topo.lookup_mac_port(dpid, eth.dst)
             if out_port is None:
                 out_ports = self.topo.flood_ports_on_tree(dpid, in_port)
@@ -312,14 +353,25 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         # resolve src/dst switch (L2 learning)
         src_sw = dpid
         dst_sw = None
-        # find dst MAC location across switches (best effort)
-        for sw, table in self.topo.mac_to_port.items():
-            if eth.dst in table:
-                dst_sw = sw
-                break
+        hosts_snapshot = dict(self.topo.hosts)
+        #self.logger.info("[L2] lookup dst_mac=%s hosts=%s", eth.dst, hosts_snapshot)
+        # find dst MAC location across switches (best effort) using hosts first
+        if eth.dst in self.topo.hosts:
+            dst_sw = self.topo.hosts[eth.dst][0]
+        else:
+            for sw, table in self.topo.mac_to_port.items():
+                if eth.dst in table:
+                    dst_sw = sw
+                    break
         if dst_sw is None:
             # unknown -> flood
             out_ports = self.topo.flood_ports_on_tree(dpid, in_port)
+            self.logger.info(
+                "[L2] dst_mac unknown; mac_table=%s hosts=%s flood_ports=%s",
+                dict(self.topo.mac_to_port),
+                dict(self.topo.hosts),
+                out_ports,
+            )
             actions = [parser.OFPActionOutput(p) for p in out_ports]
             out = parser.OFPPacketOut(datapath=dp, buffer_id=ofp.OFP_NO_BUFFER,
                                       in_port=in_port, actions=actions, data=msg.data)
@@ -334,16 +386,7 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         # install baseline path (hop-count == cost 1)
         path = self.path_engine.shortest_path(src_sw, dst_sw)
         if not path:
+            self.logger.warning("[PATH] no path src=%s dst=%s", src_sw, dst_sw)
             return
-        self.flow_mgr.install_path(desc, cookie, path)
-
-        # forward this packet along first hop
-        if len(path) > 1:
-            nxt = path[1]
-            out_port = self.topo.neigh.get(src_sw, {}).get(nxt)
-            if out_port is None:
-                return
-            actions = [parser.OFPActionOutput(out_port)]
-            out = parser.OFPPacketOut(datapath=dp, buffer_id=ofp.OFP_NO_BUFFER,
-                                      in_port=in_port, actions=actions, data=msg.data)
-            dp.send_msg(out)
+        # Install flow rules for the path
+        self.flow_mgr.install_path(desc, cookie, path, self.topo.hosts[eth.dst][1])

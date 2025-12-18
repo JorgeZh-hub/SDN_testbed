@@ -73,7 +73,7 @@ try:
         docker_args = {
             "name": name,
             "ip": ip,
-            "dimage": image,
+            "dimage": image
         }
 
         if volumes:

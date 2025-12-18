@@ -31,6 +31,8 @@ class TopologyManager:
 
         # MAC learning: mac -> (dpid,port)
         self.mac_to_port: Dict[int, Dict[str, int]] = defaultdict(dict)
+        # Host location (first seen): mac -> (dpid, port)
+        self.hosts: Dict[str, Tuple[int, int]] = {}
 
     # ---------------- Datapaths & Ports ----------------
     def register_dp(self, dp):
@@ -60,45 +62,65 @@ class TopologyManager:
     def get_port_name(self, dpid: int, port_no: int) -> Optional[str]:
         return self.port_name.get((dpid, port_no))
 
+    
     # ---------------- Links ----------------
     def add_link(self, src_dpid: int, src_port: int, dst_dpid: int, dst_port: int):
-        # directed src->dst
         self.neigh[src_dpid][dst_dpid] = src_port
-        self.port_to_neigh[src_dpid][src_port] = dst_dpid
-        self.link_ports[(src_dpid, dst_dpid)] = (src_port, dst_port)
+        self.neigh[dst_dpid][src_dpid] = dst_port
 
-        # recompute tree (cheap BFS)
+        self.port_to_neigh[src_dpid][src_port] = dst_dpid
+        self.port_to_neigh[dst_dpid][dst_port] = src_dpid
+
+        self.link_ports[(src_dpid, dst_dpid)] = (src_port, dst_port)
+        self.link_ports[(dst_dpid, src_dpid)] = (dst_port, src_port)
+
         self._recompute_spanning_tree()
 
-    def del_link(self, src_dpid: int, dst_dpid: int):
-        self.neigh.get(src_dpid, {}).pop(dst_dpid, None)
-        # remove port_to_neigh entry
-        for p,v in list(self.port_to_neigh.get(src_dpid, {}).items()):
-            if v == dst_dpid:
-                self.port_to_neigh[src_dpid].pop(p, None)
-        self.link_ports.pop((src_dpid, dst_dpid), None)
+    def del_link(self, dpid1: int, dpid2: int):
+        self.neigh.get(dpid1, {}).pop(dpid2, None)
+        self.neigh.get(dpid2, {}).pop(dpid1, None)
+
+        # limpia port_to_neigh en ambos switches
+        for p, v in list(self.port_to_neigh.get(dpid1, {}).items()):
+            if v == dpid2:
+                self.port_to_neigh[dpid1].pop(p, None)
+        for p, v in list(self.port_to_neigh.get(dpid2, {}).items()):
+            if v == dpid1:
+                self.port_to_neigh[dpid2].pop(p, None)
+
+        self.link_ports.pop((dpid1, dpid2), None)
+        self.link_ports.pop((dpid2, dpid1), None)
+
         self._recompute_spanning_tree()
 
     def _recompute_spanning_tree(self):
-        # Simple BFS from smallest dpid to avoid L2 loops on flood
         dpids = sorted(self.datapaths.keys())
-        if not dpids:
-            self.tree_ports.clear()
-            self.tree_root = None
-            return
-        root = dpids[0]
-        self.tree_root = root
         self.tree_ports = defaultdict(set)
 
-        visited = set([root])
+        if not dpids:
+            self.tree_root = None
+            return
+
+        root = dpids[0]
+        self.tree_root = root
+
+        visited = {root}
         q = deque([root])
+
         while q:
             u = q.popleft()
-            for v, outp in self.neigh.get(u, {}).items():
+            for v in sorted(self.neigh.get(u, {}).keys()):
                 if v in visited:
                     continue
-                # u->v is in tree
-                self.tree_ports[u].add(outp)
+                try:
+                    puv = self.neigh[u][v] 
+                    pvu = self.neigh[v][u] 
+                except KeyError:
+                    continue
+
+                self.tree_ports[u].add(puv)
+                self.tree_ports[v].add(pvu)
+
                 visited.add(v)
                 q.append(v)
 
@@ -117,6 +139,10 @@ class TopologyManager:
     # ---------------- L2 learning helpers ----------------
     def learn_mac(self, dpid: int, src_mac: str, in_port: int):
         self.mac_to_port[dpid][src_mac] = in_port
+
+    def learn_host(self, dpid: int, src_mac: str, in_port: int):
+        if src_mac not in self.hosts:
+            self.hosts[src_mac] = (dpid, in_port)
 
     def lookup_mac_port(self, dpid: int, dst_mac: str) -> Optional[int]:
         return self.mac_to_port.get(dpid, {}).get(dst_mac)

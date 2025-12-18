@@ -121,10 +121,11 @@ class FlowManager:
                      desc: FlowDescriptor,
                      cookie: int,
                      path: List[int],
+                     last_port: int,
                      idle_timeout: int = 0,
                      hard_timeout: int = 0):
         """Instala reglas en cada switch del path (direccion src->dst)."""
-        if not path or len(path) == 1:
+        if not path:# or len(path) == 1:
             return
 
         # Build match from FlowKey
@@ -142,20 +143,23 @@ class FlowManager:
             match_kwargs["ipv4_dst"] = k.ip_dst
         if k.ip_proto is not None:
             match_kwargs["ip_proto"] = int(k.ip_proto)
-        if k.l4_src is not None and k.ip_proto in (6,17):
+        """if k.l4_src is not None and k.ip_proto in (6,17):
             match_kwargs["tcp_src" if k.ip_proto==6 else "udp_src"] = int(k.l4_src)
         if k.l4_dst is not None and k.ip_proto in (6,17):
-            match_kwargs["tcp_dst" if k.ip_proto==6 else "udp_dst"] = int(k.l4_dst)
+            match_kwargs["tcp_dst" if k.ip_proto==6 else "udp_dst"] = int(k.l4_dst)"""
 
-        for i in range(len(path)-1):
+        for i in range(len(path)):
             u = path[i]
-            v = path[i+1]
             dp = self.topo.datapaths.get(u)
-            if dp is None:
-                continue
-            out_port = self.topo.neigh.get(u, {}).get(v)
-            if out_port is None:
-                continue
+            if u == path[-1]:
+                out_port = last_port
+            else:
+                v = path[i+1]
+                if dp is None:
+                    continue
+                out_port = self.topo.neigh.get(u, {}).get(v)
+                if out_port is None:
+                    continue
 
             parser = dp.ofproto_parser
             ofp = dp.ofproto
