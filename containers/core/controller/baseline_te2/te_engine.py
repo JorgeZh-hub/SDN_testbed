@@ -19,12 +19,14 @@ class TEEngine:
                  delta_global: float = 0.02,
                  K: float = 5.0,
                  safety_factor: float = 1.2,
-                 r_min_mbps: float = 0.1):
+                 r_min_mbps: float = 0.1,
+                 log_enabled: bool = True):
         self.topo = topo
         self.stats = stats
         self.path_engine = path_engine
         self.flow_mgr = flow_mgr
         self.log = logger
+        self.log_enabled = bool(log_enabled)
 
         self.te_period = float(te_period)
         self.cooldown_s = float(cooldown_s)
@@ -47,7 +49,8 @@ class TEEngine:
         # Snapshot current loads
         sim_load: Dict[Tuple[int,int], float] = self.stats.snapshot_loads()
         mlu_before = self._mlu(sim_load)
-        self.log.info("[TE] start mlu_before=%.3f links=%d", mlu_before, len(sim_load))
+        if self.log_enabled:
+            self.log.info("[TE] start mlu_before=%.3f links=%d", mlu_before, len(sim_load))
 
         # Build hot links list
         hot_links = []
@@ -56,10 +59,11 @@ class TEEngine:
                 U = self.stats.util(e)
                 hot_links.append((e, U))
         hot_links.sort(key=lambda x: x[1], reverse=True)
-        if hot_links:
-            self.log.info("[TE] hot_links=%s", hot_links)
-        else:
-            self.log.info("[TE] no hot links; exit")
+        if self.log_enabled:
+            if hot_links:
+                self.log.info("[TE] hot_links=%s", hot_links)
+            else:
+                self.log.info("[TE] no hot links; exit")
 
         for (hot_e, Uhot) in hot_links:
             if Uhot <= self.hot_th:
@@ -68,7 +72,8 @@ class TEEngine:
             crit_cookies = [c for c in self.flow_mgr.link_cookies.get(hot_e, set())
                             if self.flow_mgr.cookie_class.get(c) == "CRIT"]
             if not crit_cookies:
-                self.log.info("[TE] hot=%s U=%.3f no CRIT cookies", hot_e, Uhot)
+                if self.log_enabled:
+                    self.log.info("[TE] hot=%s U=%.3f no CRIT cookies", hot_e, Uhot)
                 continue
 
             crit_cookies.sort(key=lambda c: self.flow_mgr.cookie_rate_mbps.get(c, 0.0), reverse=True)
@@ -76,16 +81,18 @@ class TEEngine:
             for cookie in crit_cookies:
                 last = self.flow_mgr.cookie_last_move.get(cookie, 0.0)
                 if now() - last < self.cooldown_s:
-                    self.log.info(
-                        "[TE] cookie=%s skip cooldown remaining=%.1fs",
-                        hex(cookie),
-                        max(0.0, self.cooldown_s - (now() - last)),
-                    )
+                    if self.log_enabled:
+                        self.log.info(
+                            "[TE] cookie=%s skip cooldown remaining=%.1fs",
+                            hex(cookie),
+                            max(0.0, self.cooldown_s - (now() - last)),
+                        )
                     continue
 
                 desc = self.flow_mgr.cookie_desc.get(cookie)
                 if desc is None:
-                    self.log.info("[TE] cookie=%s no desc, skip", hex(cookie))
+                    if self.log_enabled:
+                        self.log.info("[TE] cookie=%s no desc, skip", hex(cookie))
                     continue
 
                 r = max(self.flow_mgr.cookie_rate_mbps.get(cookie, 0.0), self.r_min_mbps)
@@ -107,7 +114,8 @@ class TEEngine:
                     cost_fn=cost_fn
                 )
                 if not new_path:
-                    self.log.info("[TE] cookie=%s no alt path (r_need=%.3f)", hex(cookie), r_need)
+                    if self.log_enabled:
+                        self.log.info("[TE] cookie=%s no alt path (r_need=%.3f)", hex(cookie), r_need)
                     continue
 
                 old_edges = self.flow_mgr.cookie_edges.get(cookie, set())
@@ -123,42 +131,46 @@ class TEEngine:
                 Uhot_before = (sim_load.get(hot_e, 0.0) / self.stats.capacity_mbps(hot_e)) if self.stats.capacity_mbps(hot_e)>0 else 0.0
                 Uhot_after = (sim2.get(hot_e, 0.0) / self.stats.capacity_mbps(hot_e)) if self.stats.capacity_mbps(hot_e)>0 else 0.0
                 if (Uhot_before - Uhot_after) < self.delta_hot:
-                    self.log.info(
-                        "[TE] cookie=%s alt path insufficient cooling %.3f->%.3f",
-                        hex(cookie),
-                        Uhot_before,
-                        Uhot_after,
-                    )
+                    if self.log_enabled:
+                        self.log.info(
+                            "[TE] cookie=%s alt path insufficient cooling %.3f->%.3f",
+                            hex(cookie),
+                            Uhot_before,
+                            Uhot_after,
+                        )
                     continue
 
                 mlu_after = self._mlu(sim2)
                 if mlu_after > mlu_before + self.delta_global:
-                    self.log.info(
-                        "[TE] cookie=%s mlu would worsen %.3f->%.3f",
-                        hex(cookie),
-                        mlu_before,
-                        mlu_after,
-                    )
+                    if self.log_enabled:
+                        self.log.info(
+                            "[TE] cookie=%s mlu would worsen %.3f->%.3f",
+                            hex(cookie),
+                            mlu_before,
+                            mlu_after,
+                        )
                     continue
 
                 # APPLY
                 old_mlu = mlu_before
                 new_cookie = self.flow_mgr.reroute_cookie(cookie, new_path)
                 if new_cookie is None:
-                    self.log.warning("[TE] reroute failed cookie=%s path=%s", hex(cookie), new_path)
+                    if self.log_enabled:
+                        self.log.warning("[TE] reroute failed cookie=%s path=%s", hex(cookie), new_path)
                     continue
                 self.flow_mgr.cookie_last_move[new_cookie] = now()
 
-                self.log.info(
-                    "[TE] decision cookie=%s->%s hot_link=%s Uhot=%.3f->%.3f mlu=%.3f->%.3f",
-                    hex(cookie),
-                    hex(new_cookie),
-                    hot_e,
-                    Uhot_before,
-                    Uhot_after,
-                    old_mlu,
-                    mlu_after,
-                )
+                if self.log_enabled:
+                    self.log.info(
+                        "[TE] decision cookie=%s->%s hot_link=%s Uhot=%.3f->%.3f mlu=%.3f->%.3f",
+                        hex(cookie),
+                        hex(new_cookie),
+                        hot_e,
+                        Uhot_before,
+                        Uhot_after,
+                        old_mlu,
+                        mlu_after,
+                    )
 
                 sim_load = sim2
                 mlu_before = mlu_after

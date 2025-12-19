@@ -38,6 +38,13 @@ CONF.register_opts([
     cfg.FloatOpt("te_period", default=5.0),
     cfg.FloatOpt("portstats_period", default=1.0),
     cfg.FloatOpt("flowstats_period", default=5.0),
+    cfg.FloatOpt("diagnostic_period", default=60.0),
+    cfg.BoolOpt("observe_net", default=True, help="Request Port/FlowStats"),
+    cfg.BoolOpt("te_activate", default=True, help="Run TE (te.run_once)"),
+    cfg.BoolOpt("logger_stats", default=True, help="Enable StatsManager logs"),
+    cfg.BoolOpt("logger_flow_manager", default=True, help="Enable FlowManager logs"),
+    cfg.BoolOpt("logger_te", default=True, help="Enable TEEngine logs"),
+    cfg.BoolOpt("logger_topology_manager", default=True, help="Enable topology-related logs"),
     cfg.FloatOpt("default_link_capacity", default=100.0),
     cfg.FloatOpt("hot_th", default=0.85),
     cfg.IntOpt("hot_n", default=2),
@@ -68,6 +75,8 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         te_data = load_yaml(te_path) if te_path else {}
         top_data = load_yaml(top_path) if top_path else {}
 
+        self.log_topo = CONF.logger_topology_manager
+
         self.cap_db = parse_links_capacity(top_data)
         self.classifier = PriorityClassifier.from_cfg(te_data)
 
@@ -79,6 +88,7 @@ class ReactiveIoTTE13(app_manager.RyuApp):
             priority_base=CONF.flow_priority,
             barrier=CONF.barrier,
             classifier=self.classifier,
+            log_enabled=CONF.logger_flow_manager,
         )
         self.stats = StatsManager(
             topo=self.topo,
@@ -92,6 +102,7 @@ class ReactiveIoTTE13(app_manager.RyuApp):
             portstats_period=CONF.portstats_period,
             flowstats_period=CONF.flowstats_period,
             app_id=CONF.app_id,
+            log_enabled=CONF.logger_stats,
         )
         self.path_engine = PathEngine(self.topo, self.stats, self.logger)
         self.te = TEEngine(
@@ -108,6 +119,7 @@ class ReactiveIoTTE13(app_manager.RyuApp):
             K=CONF.K,
             safety_factor=CONF.safety_factor,
             r_min_mbps=CONF.r_min_mbps,
+            log_enabled=CONF.logger_te,
         )
 
         self.logger.info(
@@ -125,6 +137,13 @@ class ReactiveIoTTE13(app_manager.RyuApp):
             CONF.app_id,
             CONF.flow_priority,
         )
+        self.logger.info(
+            "[INIT] flags observe_net=%s te_activate=%s",
+            CONF.observe_net,
+            CONF.te_activate,
+        )
+        if CONF.te_activate and not CONF.observe_net:
+            self.logger.warning("[INIT] te_activate enabled but observe_net disabled: TE will lack network metrics")
 
         self._last_pkt_log = 0.0
         self.PKT_LOG_INTERVAL = 2.0
@@ -139,32 +158,32 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         last_flow = 0.0
         last_te = 0.0
         last_diag = 0.0
-        diag_interval = 15.0
         while True:
             t = time.time()
-            if t - last_port >= CONF.portstats_period:
+            if CONF.observe_net and (t - last_port >= CONF.portstats_period):
                 last_port = t
                 self.stats.request_port_stats()
-            if t - last_flow >= CONF.flowstats_period:
+            if CONF.observe_net and (t - last_flow >= CONF.flowstats_period):
                 last_flow = t
                 self.stats.request_flow_stats()
-            if t - last_te >= CONF.te_period:
+            if CONF.te_activate and (t - last_te >= CONF.te_period):
                 last_te = t
                 try:
                     self.te.run_once()
                 except Exception as e:
                     self.logger.exception("TE error: %s", e)
-            if t - last_diag >= diag_interval:
+            if t - last_diag >= CONF.diagnostic_period:
                 last_diag = t
                 dpids = sorted(self.topo.datapaths.keys())
                 tree_ports = {dpid: sorted(ports) for dpid, ports in self.topo.tree_ports.items()}
-                self.logger.info(
-                    "[NET] dps=%s links=%s tree_root=%s tree_ports=%s",
-                    dpids,
-                    len(self.topo.link_ports),
-                    self.topo.tree_root,
-                    tree_ports,
-                )
+                if self.log_topo:
+                    self.logger.info(
+                        "[NET] dps=%s links=%s tree_root=%s tree_ports=%s",
+                        dpids,
+                        len(self.topo.link_ports),
+                        self.topo.tree_root,
+                        tree_ports,
+                    )
                 edge_stats = []
                 for e, (u_p, v_p) in self.topo.link_ports.items():
                     u, v = e
@@ -177,14 +196,16 @@ class ReactiveIoTTE13(app_manager.RyuApp):
                     edge_stats.append((util, f"{u}->{v}", u_name, v_name, cap, load, hot))
                 edge_stats.sort(key=lambda x: x[0], reverse=True)
                 top_edges = edge_stats[:10]
-                self.logger.info(
-                    "[LINKS] top_util=%s flows=%s",
-                    top_edges,
-                    len(self.flow_mgr.cookie_path),
-                )
+                if self.log_topo:
+                    self.logger.info(
+                        "[LINKS] top_util=%s flows=%s",
+                        top_edges,
+                        len(self.flow_mgr.cookie_path),
+                    )
                 hot_edges = [e for e in edge_stats if e[6]]
                 if hot_edges:
-                    self.logger.info("[LINKS] hot=%s", hot_edges)
+                    if self.log_topo:
+                        self.logger.info("[LINKS] hot=%s", hot_edges)
             hub.sleep(0.2)
 
     # ---------------- Switch lifecycle ----------------
@@ -192,7 +213,8 @@ class ReactiveIoTTE13(app_manager.RyuApp):
     def switch_features_handler(self, ev):
         dp = ev.msg.datapath
         self.topo.register_dp(dp)
-        self.logger.info("[SWITCH] features dpid=%s", dp.id)
+        if self.log_topo:
+            self.logger.info("[SWITCH] features dpid=%s", dp.id)
 
         # table-miss (send to controller)
         ofp = dp.ofproto
@@ -214,7 +236,8 @@ class ReactiveIoTTE13(app_manager.RyuApp):
             self.topo.register_dp(dp)
         elif ev.state == DEAD_DISPATCHER:
             self.topo.unregister_dp(dp.id)
-            self.logger.warning("[SWITCH] disconnected dpid=%s", dp.id)
+            if self.log_topo:
+                self.logger.warning("[SWITCH] disconnected dpid=%s", dp.id)
 
     @set_ev_cls(ofp_event.EventOFPPortDescStatsReply, MAIN_DISPATCHER)
     def port_desc_reply_handler(self, ev):
@@ -235,13 +258,14 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         s = ev.link.src
         d = ev.link.dst
         self.topo.add_link(s.dpid, s.port_no, d.dpid, d.port_no)
-        self.logger.info(
-            "[LINK] add %s:%s -> %s:%s",
-            s.dpid,
-            s.port_no,
-            d.dpid,
-            d.port_no,
-        )
+        if self.log_topo:
+            self.logger.info(
+                "[LINK] add %s:%s -> %s:%s",
+                s.dpid,
+                s.port_no,
+                d.dpid,
+                d.port_no,
+            )
 
         # Try to map capacity from YAML via port names
         spn = self.topo.get_port_name(s.dpid, s.port_no) or ""
@@ -256,13 +280,14 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         s = ev.link.src
         d = ev.link.dst
         self.topo.del_link(s.dpid, d.dpid)
-        self.logger.warning(
-            "[LINK] del %s:%s -> %s:%s",
-            s.dpid,
-            s.port_no,
-            d.dpid,
-            d.port_no,
-        )
+        if self.log_topo:
+            self.logger.warning(
+                "[LINK] del %s:%s -> %s:%s",
+                s.dpid,
+                s.port_no,
+                d.dpid,
+                d.port_no,
+            )
 
         # Optional: clean cookies affected by this link (simple)
         e1 = (s.dpid, d.dpid)
@@ -401,4 +426,3 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         msg = ev.msg
         self.logger.error("[OF-ERROR] dpid=%s type=0x%x code=0x%x data=%s",
                         msg.datapath.id, msg.type, msg.code, msg.data.hex())
-

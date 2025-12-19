@@ -23,10 +23,12 @@ class StatsManager:
                  hot_n: int = 2,
                  portstats_period: float = 1.0,
                  flowstats_period: float = 5.0,
-                 app_id: int = 0xBEEF):
+                 app_id: int = 0xBEEF,
+                 log_enabled: bool = True):
         self.topo = topo
         self.flow_mgr = flow_mgr
         self.log = logger
+        self.log_enabled = bool(log_enabled)
 
         self.default_capacity_mbps = float(default_capacity_mbps)
         self.alpha_link = float(alpha_link)
@@ -81,6 +83,7 @@ class StatsManager:
     def handle_port_stats_reply(self, dp, msg):
         ts = now()
         dpid = dp.id
+        updated = 0
         for stat in msg.body:
             port_no = stat.port_no
             # only consider ports that map to a neighbor (directed link)
@@ -108,6 +111,23 @@ class StatsManager:
 
             self._prev_tx_bytes[dpid][port_no] = int(stat.tx_bytes)
             self._prev_ts[dpid][port_no] = ts
+            updated += 1
+            if self.log_enabled:
+                port_name = self.topo.get_port_name(dpid, port_no) or ""
+                self.log.info(
+                    "[STATS] port dpid=%s port=%s(%s) neigh=%s tx_mbps=%.3f ewma=%.3f util=%.3f hot_cnt=%s",
+                    dpid,
+                    port_no,
+                    port_name,
+                    v,
+                    mbps,
+                    new,
+                    u,
+                    self.hot_counter.get(e, 0),
+                )
+        if self.log_enabled and updated:
+            hot_now = {e: self.hot_counter[e] for e in self.hot_counter if self.hot_counter[e] > 0}
+            self.log.info("[STATS] port_reply dpid=%s updated_ports=%s hot=%s", dpid, updated, hot_now)
 
     # -------- FlowStats request/reply integration --------
     def request_flow_stats(self):
@@ -132,6 +152,7 @@ class StatsManager:
         ts = now()
         # We'll estimate cookie rate by byte delta / dt and EWMA.
         # Important: stats come per-switch; we conservatively take max across switches in FlowManager.
+        updated = 0
         for st in msg.body:
             cookie = int(st.cookie)
             byte_count = int(getattr(st, "byte_count", 0))
@@ -150,6 +171,19 @@ class StatsManager:
 
             # feed FlowManager
             self.flow_mgr.update_cookie_rate(cookie, mbps, alpha=self.alpha_flow)
+            updated += 1
+            if self.log_enabled:
+                cls = self.flow_mgr.cookie_class.get(cookie, "-")
+                path = self.flow_mgr.cookie_path.get(cookie, [])
+                self.log.info(
+                    "[STATS] flow cookie=%s class=%s mbps=%.3f path=%s",
+                    hex(cookie),
+                    cls,
+                    mbps,
+                    path,
+                )
+        if self.log_enabled and updated:
+            self.log.info("[STATS] flow_reply cookies=%s", updated)
 
     # -------- Helpers for TE --------
     def is_hot(self, e: Tuple[int,int]) -> bool:

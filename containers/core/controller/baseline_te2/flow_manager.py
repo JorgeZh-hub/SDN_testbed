@@ -19,9 +19,11 @@ class FlowManager:
                  app_id: int = 0xBEEF,
                  priority_base: int = 20000,
                  barrier: bool = True,
-                 classifier: Optional[PriorityClassifier] = None):
+                 classifier: Optional[PriorityClassifier] = None,
+                 log_enabled: bool = True):
         self.topo = topo
         self.log = logger
+        self.log_enabled = bool(log_enabled)
         self.app_id = int(app_id) & 0xFFFF
         self.priority_base = int(priority_base)
         self.use_barrier = bool(barrier)
@@ -75,14 +77,15 @@ class FlowManager:
             self.cookie_class[cur] = cls
 
             k = desc.key
-            self.log.info(
-                "[CLASS] new_cookie=%s class=%s rule=%s stable=%s:%s 5t=%s:%s -> %s:%s proto=%s",
-                hex(cur), cls, rule or "-",
-                stable_side or "-", stable_port if stable_port is not None else "-",
-                k.ip_src or "-", k.l4_src if k.l4_src is not None else "-",
-                k.ip_dst or "-", k.l4_dst if k.l4_dst is not None else "-",
-                k.ip_proto if k.ip_proto is not None else "-"
-            )
+            if self.log_enabled:
+                self.log.info(
+                    "[CLASS] new_cookie=%s class=%s rule=%s stable=%s:%s 5t=%s:%s -> %s:%s proto=%s",
+                    hex(cur), cls, rule or "-",
+                    stable_side or "-", stable_port if stable_port is not None else "-",
+                    k.ip_src or "-", k.l4_src if k.l4_src is not None else "-",
+                    k.ip_dst or "-", k.l4_dst if k.l4_dst is not None else "-",
+                    k.ip_proto if k.ip_proto is not None else "-"
+                )
 
         return cur
 
@@ -258,16 +261,17 @@ class FlowManager:
 
         self._register_cookie_path(cookie, path)
         k = desc.key
-        self.log.info(
-            "[FLOW] install cookie=%s class=%s stable=%s:%s src=%s:%s dst=%s:%s proto=%s path=%s",
-            hex(cookie),
-            self.cookie_class.get(cookie, "BE"),
-            stable_side or "-", stable_port if stable_port is not None else "-",
-            k.ip_src or "-", k.l4_src if k.l4_src is not None else "-",
-            k.ip_dst or "-", k.l4_dst if k.l4_dst is not None else "-",
-            k.ip_proto if k.ip_proto is not None else "-",
-            path,
-        )
+        if self.log_enabled:
+            self.log.info(
+                "[FLOW] install cookie=%s class=%s stable=%s:%s src=%s:%s dst=%s:%s proto=%s path=%s",
+                hex(cookie),
+                self.cookie_class.get(cookie, "BE"),
+                stable_side or "-", stable_port if stable_port is not None else "-",
+                k.ip_src or "-", k.l4_src if k.l4_src is not None else "-",
+                k.ip_dst or "-", k.l4_dst if k.l4_dst is not None else "-",
+                k.ip_proto if k.ip_proto is not None else "-",
+                path,
+            )
 
 
     def delete_cookie_exact(self, cookie: int, dpids: Optional[List[int]] = None):
@@ -332,15 +336,16 @@ class FlowManager:
         self._active_cookie_by_key[ckey] = new_cookie
 
 
-        self.log.info(
-            "[TE] reroute cookie=%s->%s class=%s rate=%.3f old_path=%s new_path=%s",
-            hex(old_cookie),
-            hex(new_cookie),
-            cls,
-            rate,
-            old_path,
-            new_path,
-        )
+        if self.log_enabled:
+            self.log.info(
+                "[TE] reroute cookie=%s->%s class=%s rate=%.3f old_path=%s new_path=%s",
+                hex(old_cookie),
+                hex(new_cookie),
+                cls,
+                rate,
+                old_path,
+                new_path,
+            )
 
         return new_cookie
 
@@ -367,4 +372,3 @@ class FlowManager:
             if hasattr(l4, "dst_port"):
                 l4_dst = int(l4.dst_port)
         return FlowKey(eth_type, src_mac, dst_mac, ip_src, ip_dst, ip_proto, l4_src, l4_dst)
-
