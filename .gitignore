@@ -1,8 +1,9 @@
 # --- NO SUBIR DATA PESADA ---
 data/
 
-# resultados/
-results/
+# resultados/pipeline
+results/*
+!results/pipeline/
 
 # Python
 __pycache__/

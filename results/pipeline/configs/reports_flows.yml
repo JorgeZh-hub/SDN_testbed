@@ -1,0 +1,113 @@
+report: flows
+
+inputs:
+  extracted_root: "data/extracted"
+  flows_glob: "rep_*/reports/flows/*.csv"
+  # si quieres limitar a algunos flujos:
+  flow_filter: [] # ejemplo: ["rtp_vc","rtp_voip"]
+  # agrupar por flujo, protocolo, o ambos:
+  group_by: ["flow", "protocol"]
+
+units:
+  delay: "ms" # ms (desde segundos)
+  jitter: "ms" # ms (desde segundos)
+  throughput: "Mbps" # Mbps o Kbps
+
+filters:
+  min_count_per_row: 1 # ignora filas con count < 1 para delay/jitter
+  drop_rows_with_nan_mean: true
+
+warmup:
+  # Para flows normalmente NO hace falta, porque el resumen ponderado por count ignora filas vacías.
+  # Igual te dejo modo opcional:
+  mode: "none" # none | fixed | auto
+  fixed_seconds: 10
+  auto:
+    # detecta inicio cuando count >= th sostenido por N segundos
+    count_th: 1
+    sustain_s: 3
+    max_search_s: 120
+  fallback_if_not_found: 0
+
+loss:
+  sent_basis: "count_a" # count_a recomendado (si existe); fallback: count
+  include_negative_loss: false # tu opción clave
+  negative_policy: "clamp0" # clamp0 | keep (keep solo aplica si include_negative_loss=true)
+
+throughput:
+  direction: "bidirectional_total"
+  # para el "promedio final" (barras):
+  normalization: "wall" # wall | active
+  # wall: total_bytes / (t_max - t_min +1)
+  # active: total_bytes / (#filas usadas)
+
+timeseries:
+  include_warmup: true
+  fill_missing_seconds: "zero"
+  min_reps_per_t: 2
+  crop_to_common_time: true # <-- NUEVO
+  crop_mode: "min_tmax" # min_tmax (recomendado)
+
+jitter:
+  auto_detect: true # si no hay jitter_* => jitter_mean_ms = NaN
+  plot_only_if_present: true # solo plotear ids con jitter válido
+
+stats:
+  confidence:
+    enable: true
+    level: 0.95
+    method: "t" # requiere scipy para exacto; si no, fallback 1.96
+
+outputs:
+  out_dir: "data/processed/flows_flows"
+  csv:
+    rep_summary_flow: "rep_summary_flow.csv"
+    rep_summary_protocol: "rep_summary_protocol.csv"
+    load_summary_flow: "load_summary_flow.csv"
+    load_summary_protocol: "load_summary_protocol.csv"
+    ts_throughput_flow: "ts_throughput_flow.csv"
+    ts_throughput_protocol: "ts_throughput_protocol.csv"
+    missing: "missing_flows.csv"
+  plots_dir: "data/processed/flows_flows/plots"
+plots:
+  # 1) Delay promedio final vs carga (una curva por controlador) - POR PROTOCOLO
+  delay_vs_load:
+    enable: true
+    group: "flow"
+    metric: "delay_mean_ms"
+    controllers: "all"
+    loads: "all"
+
+  # 2) Jitter promedio vs carga - POR PROTOCOLO (solo si existe)
+  jitter_vs_load:
+    enable: true
+    group: "flow"
+    metric: "jitter_mean_ms"
+    controllers: "all"
+    loads: "all"
+
+  # 3) Barras por protocolo: pérdida % vs carga
+  loss_bars:
+    enable: true
+    group: "flow"
+    metric: "loss_pct"
+    controllers: "all"
+    loads: "all"
+
+  # 3b) Barras por protocolo: throughput promedio vs carga
+  throughput_bars:
+    enable: true
+    group: "flow"
+    metric: "throughput_total_mean_Mbps"
+    controllers: "all"
+    loads: "all"
+
+  # 4) Throughput vs tiempo - TODOS los protocolos para carga 2a (una curva por controlador)
+  throughput_timeseries:
+    enable: true
+    group: "flow"
+    select:
+      load: "2a"
+      id: "all" # <-- NUEVO: all = iterar todos los protocolos encontrados
+    controllers: "all"
+    metric: "throughput_Mbps"

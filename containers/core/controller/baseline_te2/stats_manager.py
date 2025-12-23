@@ -2,10 +2,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Dict, Tuple, Optional
-
-from ryu.ofproto import ofproto_v1_3
-from ryu.lib import hub
+from typing import Dict, Tuple
 
 from .utils import now
 

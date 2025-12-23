@@ -2,14 +2,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
 from typing import Dict, Set, Tuple, Optional, List, Any
 
 
-from ryu.ofproto import ofproto_v1_3
-from ryu.lib.packet import ethernet, ipv4, tcp, udp, icmp
-
-from .utils import FlowKey, FlowDescriptor, stable_u32_hash, now
+from .utils import FlowKey, FlowDescriptor, stable_u32_hash
 from .classifier import PriorityClassifier
 
 class FlowManager:

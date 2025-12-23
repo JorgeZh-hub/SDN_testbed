@@ -1,0 +1,95 @@
+report: containers
+
+inputs:
+  extracted_root: "data/extracted"
+  containers_glob: "rep_*/reports/containers/*.csv"
+  container_filter: ["ryu-ctrl"] # [] = todos
+  required_columns:
+    - timestamp
+    - cpu_perc
+    - mem_used_bytes
+    - mem_limit_bytes
+    - mem_perc
+    - block_read_bytes
+    - block_write_bytes
+
+time:
+  align: "relative"
+  resample_s: 1
+  min_reps_per_t: 3 # para graficar series (el CSV igual guarda todo)
+
+warmup:
+  mode: "auto" # auto | fixed | none
+  auto:
+    cpu_idle_th: 0.25 # %CPU umbral “ya arrancó”
+    smooth_window_s: 5 # suavizado (ventana)
+    sustain_s: 5 # debe sostenerse >th por N segundos
+    max_search_s: 120 # busca inicio hasta este tiempo
+  fixed:
+    seconds: 10
+  fallback_if_not_found: 0 # si nunca supera umbral: warmup=0
+
+stats:
+  confidence:
+    enable: true
+    level: 0.95
+    method: "t" # t (recomendado)
+  bar_error: "ci" # ci | std
+
+metrics:
+  cpu_mean_perc:
+    kind: "gauge_mean"
+    column: "cpu_perc"
+    unit: "percent"
+
+  ram_mean_mib:
+    kind: "gauge_mean"
+    column: "mem_used_bytes"
+    transform: "bytes_to_mib"
+    unit: "MiB"
+
+  io_write_total_mib:
+    kind: "counter_total"
+    column: "block_write_bytes"
+    transform: "bytes_to_mib"
+    unit: "MiB"
+
+  io_write_rate_kib_s:
+    kind: "counter_rate"
+    column: "block_write_bytes"
+    transform: "bytes_to_kib"
+    unit: "KiB/s"
+
+outputs:
+  out_dir: "data/processed/containers"
+  csv:
+    rep_summary: "rep_summary.csv"
+    load_summary: "load_summary.csv"
+    timeseries_mean: "timeseries_mean.csv"
+    missing: "missing_files.csv"
+  plots_dir: "data/processed/containers/plots"
+
+plots:
+  bar_by_load:
+    enable: true
+    container: "ryu-ctrl"
+    metrics: ["cpu_mean_perc", "ram_mean_mib", "io_write_total_mib"]
+    error: "ci" # usa IC95%
+
+  timeseries_avg_reps:
+    enable: false
+    select:
+      controller: "test_newTop_TE"
+      load: "1a"
+      container: "ryu-ctrl"
+    metrics: ["cpu_mean_perc", "ram_mean_mib", "io_write_rate_kib_s"]
+
+  timeseries_multi_controllers:
+    enable: true
+    select:
+      load: "1a"
+      container: "ryu-ctrl"
+      controllers: "all"
+    metrics: ["cpu_mean_perc", "ram_mean_mib", "io_write_rate_kib_s"]
+    min_reps_per_t: 2 # filtro SOLO para graficar (evita colas con pocas reps)
+

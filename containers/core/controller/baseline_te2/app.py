@@ -1,10 +1,7 @@
 #!/usr/bin/python3
 from __future__ import annotations
 
-import os
-import requests
 import time
-from typing import Optional
 
 from ryu.base import app_manager
 from ryu.controller import ofp_event

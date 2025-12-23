@@ -1,7 +1,7 @@
 # te_engine.py
 from __future__ import annotations
 
-from typing import Dict, Tuple, List, Optional, Set
+from typing import Dict, Tuple, List
 
 from .utils import now
 
