@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import requests
 import time
 from typing import Optional
 
@@ -56,6 +57,7 @@ CONF.register_opts([
     cfg.FloatOpt("delta_hot", default=0.05),
     cfg.FloatOpt("delta_global", default=0.02),
     cfg.FloatOpt("r_min_mbps", default=0.1),
+    cfg.BoolOpt("queues_enable", default=False),
     cfg.IntOpt("app_id", default=0xBEEF),
     cfg.IntOpt("flow_priority", default=20000),
     cfg.BoolOpt("barrier", default=True),
@@ -87,6 +89,7 @@ class ReactiveIoTTE13(app_manager.RyuApp):
             app_id=CONF.app_id,
             priority_base=CONF.flow_priority,
             barrier=CONF.barrier,
+            queues_enable=CONF.queues_enable,
             classifier=self.classifier,
             log_enabled=CONF.logger_flow_manager,
         )
@@ -119,6 +122,7 @@ class ReactiveIoTTE13(app_manager.RyuApp):
             K=CONF.K,
             safety_factor=CONF.safety_factor,
             r_min_mbps=CONF.r_min_mbps,
+            table_id=0,
             log_enabled=CONF.logger_te,
         )
 
@@ -222,12 +226,16 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         match = parser.OFPMatch()
         actions = [parser.OFPActionOutput(ofp.OFPP_CONTROLLER, ofp.OFPCML_NO_BUFFER)]
         inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
-        mod = parser.OFPFlowMod(datapath=dp, priority=0, match=match, instructions=inst)
+        mod = parser.OFPFlowMod(datapath=dp, table_id=0 ,priority=0, match=match, instructions=inst)
         dp.send_msg(mod)
+        if self.log_topo:
+            self.logger.info("[SWITCH] installed table-miss dpid=%s", dp.id)
 
         # request PortDesc to learn port names
         req = parser.OFPPortDescStatsRequest(dp, 0)
         dp.send_msg(req)
+        if self.log_topo:
+            self.logger.info("[SWITCH] sent PortDesc request dpid=%s", dp.id)
 
     @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def _state_change(self, ev):
@@ -241,16 +249,16 @@ class ReactiveIoTTE13(app_manager.RyuApp):
 
     @set_ev_cls(ofp_event.EventOFPPortDescStatsReply, MAIN_DISPATCHER)
     def port_desc_reply_handler(self, ev):
-            dp = ev.msg.datapath
-            self.topo.update_port_desc(dp.id, ev.msg.body)
-            # Re-intenta mapear capacidades para links ya descubiertos (por si LinkAdd llegó antes de PortDesc)
-            for (u,v), (u_p, v_p) in list(self.topo.link_ports.items()):
-                spn = self.topo.get_port_name(u, u_p) or ""
-                dpn = self.topo.get_port_name(v, v_p) or ""
-                cap = self.cap_db.capacity_for(spn, dpn)
-                if cap is not None:
-                    self.stats.set_capacity((u,v), cap)
-                    self.stats.set_capacity((v,u), cap)
+        dp = ev.msg.datapath
+        self.topo.update_port_desc(dp.id, ev.msg.body)
+        # Re-intenta mapear capacidades para links ya descubiertos (por si LinkAdd llegó antes de PortDesc)
+        for (u,v), (u_p, v_p) in list(self.topo.link_ports.items()):
+            spn = self.topo.get_port_name(u, u_p) or ""
+            dpn = self.topo.get_port_name(v, v_p) or ""
+            cap = self.cap_db.capacity_for(spn, dpn)
+            if cap is not None:
+                self.stats.set_capacity((u,v), cap)
+                self.stats.set_capacity((v,u), cap)
 
     # ---------------- Topology events (LLDP discovery) ----------------
     @set_ev_cls(event.EventLinkAdd)
@@ -413,11 +421,16 @@ class ReactiveIoTTE13(app_manager.RyuApp):
             self.logger.warning("[PATH] no path src=%s dst=%s", src_sw, dst_sw)
             return
         
-        
-        already = (cookie in self.flow_mgr.cookie_path and self.flow_mgr.cookie_path[cookie] == path)
 
+        already = (cookie in self.flow_mgr.cookie_path and self.flow_mgr.cookie_path[cookie] == path)
         if not already:
-            self.flow_mgr.install_path(desc, cookie, path, self.flow_mgr.hosts[eth.dst][1])
+            self.flow_mgr.install_path(
+                desc,
+                cookie,
+                path,
+                self.flow_mgr.hosts[eth.dst][1],
+                table_id=0,
+            )
         else:
             self.logger.debug("[FLOW] skip reinstall cookie=%s path=%s", hex(cookie), path)
 

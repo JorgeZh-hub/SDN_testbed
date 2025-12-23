@@ -52,6 +52,7 @@ def main():
     image = cfg.get("image", "")
     command = cfg.get("command") or cfg.get("comand") or ""
     volumes = cfg.get("volumes") or []
+    ports = cfg.get("ports") or []
     base_dir = topo_path.parent
     host_root = os.environ.get("HOST_PROJECT_ROOT")
 
@@ -63,6 +64,8 @@ def main():
     for v in volumes:
         norm = normalize_volume(v, base_dir, host_root)
         print(f"VOLUME={norm}")
+    for p in ports:
+        print(f"PORT={p}")
 
 
 if __name__ == "__main__":

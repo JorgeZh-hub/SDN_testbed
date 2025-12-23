@@ -15,10 +15,61 @@ import yaml
 import numpy as np
 import os
 from pathlib import Path
+from typing import List
 
 setLogLevel('info')
 TOPOLOGY_FILE = os.environ.get("TOPOLOGY_FILE", "topology_conf.yml")
 BASE_DIR = Path(TOPOLOGY_FILE).resolve().parent
+
+def run_cmd(cmd):
+    p = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True
+    )
+    if p.returncode != 0:
+        raise RuntimeError(f"cmd failed rc={p.returncode}\ncmd={' '.join(cmd)}\nstdout={p.stdout}\nstderr={p.stderr}")
+    return p
+
+def ovs_apply_qos_linux_htb(port_name: str, cap_mbps: float, crit_ratio: float):
+    wait_for_port(port_name, timeout_s=5.0)
+    cap_bps = int(cap_mbps * 1_000_000)
+    crit_bps = int(cap_mbps * crit_ratio * 1_000_000)
+
+    # limpia qos previo
+    run_cmd(["sudo", "ovs-vsctl", "--if-exists", "clear", "Port", port_name, "qos"])
+
+    # crea QoS + queues y asocia al puerto
+    run_cmd([
+        "sudo", "ovs-vsctl",
+        "--", "set", "Port", port_name, "qos=@qos",
+        "--", "--id=@qos", "create", "QoS",
+        "type=linux-htb",
+        f"other-config:max-rate={cap_bps}",
+        "queues:0=@q0",
+        "queues:1=@q1",
+        "--", "--id=@q0", "create", "Queue",
+        f"other-config:max-rate={cap_bps}",
+        "--", "--id=@q1", "create", "Queue",
+        f"other-config:min-rate={crit_bps}",
+    ])
+
+
+def ovs_port_exists(port_name: str) -> bool:
+    r = subprocess.run(
+        ["sudo", "ovs-vsctl", "--if-exists", "get", "Port", port_name, "name"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True
+    )
+    return r.returncode == 0 and r.stdout.strip() != ""
+
+def wait_for_port(port_name: str, timeout_s: float = 5.0) -> None:
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        if ovs_port_exists(port_name):
+            return
+        time.sleep(0.1)
+    raise RuntimeError(f"Port not found in OVSDB after {timeout_s}s: {port_name}")
 
 def normalize_volumes(vol_list):
     resolved = []
@@ -48,6 +99,7 @@ try:
     hosts_cfg = cfg.get("hosts", {})
     links_cfg = cfg.get("links", [])
     n_switches = cfg.get("n_switches", 0)
+    ports_to_qos = []  # [(port_name, cap_mbps), ...]
 
     info('*** Creating network\n')
     cleanup()
@@ -116,13 +168,39 @@ try:
             intfName2=right,
         )
 
+        qos_cfg = cfg.get("qos", {})
+        qos_enabled = qos_cfg.get("enabled", False)
+        crit_ratio = float(qos_cfg.get("link_crit_ratio", 0.3))
+
+        if qos_enabled and node1_name in switches:
+            ports_to_qos.append((left, bw))
+        if qos_enabled and node2_name in switches:
+            ports_to_qos.append((right, bw))
+
     info('*** Building network\n')
     net.build()
+
 
     info('*** Starting controller and switches\n')
     c0.start()
     for sw in switches.values():
         sw.start([c0])
+
+    time.sleep(1)
+
+    if qos_enabled:
+        qos_errors = []
+        for port_name, cap in ports_to_qos:
+            try:
+                info(f"*** [QOS] Applying queues port={port_name} cap={cap}Mbps crit_ratio={crit_ratio}\n")
+                ovs_apply_qos_linux_htb(port_name, cap, crit_ratio)
+                info(f"*** [QOS] Applied queues port={port_name}\n")
+            except Exception as err:
+                info(f"*** [QOS][ERROR] port={port_name} err={err}\n")
+                qos_errors.append((port_name, str(err)))
+
+        if qos_errors:
+            info(f"*** [QOS] Failed on ports: {qos_errors}\n")
 
     info('*** (Optional) Connecting physical interface eno1 to switch11\n')
     # switches['switch3'].cmd('ovs-vsctl add-port switch3 eno1')

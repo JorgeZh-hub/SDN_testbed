@@ -20,6 +20,7 @@ class TEEngine:
                  K: float = 5.0,
                  safety_factor: float = 1.2,
                  r_min_mbps: float = 0.1,
+                 table_id: int = 0,
                  log_enabled: bool = True):
         self.topo = topo
         self.stats = stats
@@ -27,6 +28,7 @@ class TEEngine:
         self.flow_mgr = flow_mgr
         self.log = logger
         self.log_enabled = bool(log_enabled)
+        self.table_id = int(table_id)
 
         self.te_period = float(te_period)
         self.cooldown_s = float(cooldown_s)
@@ -153,7 +155,7 @@ class TEEngine:
 
                 # APPLY
                 old_mlu = mlu_before
-                new_cookie = self.flow_mgr.reroute_cookie(cookie, new_path)
+                new_cookie = self.flow_mgr.reroute_cookie(cookie, new_path, table_id=self.table_id)
                 if new_cookie is None:
                     if self.log_enabled:
                         self.log.warning("[TE] reroute failed cookie=%s path=%s", hex(cookie), new_path)

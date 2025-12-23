@@ -12,6 +12,13 @@ controller:
     - "../../containers/core/controller/baseline_te2:/app/baseline_te2"
     - "./topology_conf.yml:/app/topology_conf.yml:ro"
 
+qos:
+  enabled: true
+  type: "linux-htb"
+  default_queue_id: 0
+  crit_queue_id: 1
+  link_crit_ratio: 0.3 # 30% mínimo para CRIT
+
 hosts:
   brkMqtt0: # brokerIot0
     image: "mqtt_broker:latest"

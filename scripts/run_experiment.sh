@@ -315,6 +315,7 @@ start_controller() {
     local ctrl_image="$RYU_IMAGE"
     local ctrl_cmd="--observe-links /app/app.py"
     local ctrl_volumes=("${CONTROLLER_DIR}/baseline:/app")
+    local ctrl_ports=()
     local custom_volumes=0
 
     if [[ -f "$TOPOLOGY_FILE_HOST" ]]; then
@@ -339,6 +340,9 @@ start_controller() {
                     custom_volumes=1
                     ctrl_volumes+=("$val")
                     ;;
+                PORT)
+                    ctrl_ports+=("$val")
+                    ;;
             esac
         done < <(
             HOST_PROJECT_ROOT="$TESTBED_DIR" python3 "$PARSE_CONTROLLER_SCRIPT" "$TOPOLOGY_FILE_HOST"
@@ -362,11 +366,20 @@ start_controller() {
                 echo "       - $v"
             done
         fi
+        if [[ ${#ctrl_ports[@]} -gt 0 ]]; then
+            echo "[CTRL] Ports:"
+            for p in "${ctrl_ports[@]}"; do
+                echo "       - $p"
+            done
+        fi
     ) | tee -a "$log_file"
 
     local run_cmd=("${DOCKER[@]}" run -d --rm --name "$RYU_CONTAINER_NAME" -w /app --net=host -e PYTHONPATH=/app)
     for v in "${ctrl_volumes[@]}"; do
         run_cmd+=(-v "$v")
+    done
+    for p in "${ctrl_ports[@]}"; do
+        run_cmd+=(-p "$p")
     done
     run_cmd+=("$RYU_IMAGE")
 

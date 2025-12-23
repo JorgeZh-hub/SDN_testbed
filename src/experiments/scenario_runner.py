@@ -247,6 +247,7 @@ def main():
         capture_conf_path = (script_dir / capture_conf_path).resolve()
 
     base_topology = load_yaml(base_topology_path)
+    base_qos_section = copy.deepcopy(base_topology.get("qos")) if isinstance(base_topology, dict) else None
     # ensure capture_conf exists/valid
     load_yaml(capture_conf_path)
 
@@ -277,6 +278,8 @@ def main():
         scenario_topology = scenario_dir / "topology_conf.yml"
 
         topo_cfg = copy.deepcopy(base_topology)
+        if base_qos_section is not None:
+            topo_cfg["qos"] = copy.deepcopy(base_qos_section)
         replacements = []
         for col in container_cols:
             value = (row.get(col, "") or "").strip()

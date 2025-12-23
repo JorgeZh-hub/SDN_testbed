@@ -19,6 +19,9 @@ class FlowManager:
                  app_id: int = 0xBEEF,
                  priority_base: int = 20000,
                  barrier: bool = True,
+                 queues_enable: bool = False,
+                 crit_queue_id: int = 1,
+                 be_queue_id: int = 0,
                  classifier: Optional[PriorityClassifier] = None,
                  log_enabled: bool = True):
         self.topo = topo
@@ -27,6 +30,9 @@ class FlowManager:
         self.app_id = int(app_id) & 0xFFFF
         self.priority_base = int(priority_base)
         self.use_barrier = bool(barrier)
+        self.use_queues = bool(queues_enable)
+        self.queue_id_crit = int(crit_queue_id)
+        self.queue_id_be = int(be_queue_id)
         self.classifier = classifier or PriorityClassifier([])
 
         # ---- TE indexes ----
@@ -139,7 +145,6 @@ class FlowManager:
 
         return base
 
-
     # ---------- Rate updates ----------
     def update_cookie_rate(self, cookie: int, observed_mbps: float, alpha: float = 0.3):
         # Conservative aggregation across switches: keep max EWMA we have seen
@@ -185,9 +190,10 @@ class FlowManager:
                      path: List[int],
                      last_port: int,
                      idle_timeout: int = 0,
-                     hard_timeout: int = 0):
+                     hard_timeout: int = 0,
+                     table_id: int = 0):
         """Instala reglas en cada switch del path (direccion src->dst)."""
-        if not path:# or len(path) == 1:
+        if not path:
             return
 
         # Build match from FlowKey
@@ -220,6 +226,10 @@ class FlowManager:
             match_kwargs.pop("eth_dst", None)"""
 
 
+        queue_id = None
+        if self.use_queues:
+            queue_id = self.queue_id_crit if cls == "CRIT" else self.queue_id_be
+
         for i in range(len(path)):
             u = path[i]
             dp = self.topo.datapaths.get(u)
@@ -237,14 +247,17 @@ class FlowManager:
             ofp = dp.ofproto
 
             match = parser.OFPMatch(**match_kwargs)
-            actions = [parser.OFPActionOutput(out_port)]
+            actions = []
+            if queue_id is not None:
+                actions.append(parser.OFPActionSetQueue(queue_id))
+            actions.append(parser.OFPActionOutput(out_port))
             inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
 
             mod = parser.OFPFlowMod(
                 datapath=dp,
                 cookie=cookie,
                 cookie_mask=0,
-                table_id=0,
+                table_id=table_id,
                 command=ofp.OFPFC_ADD,
                 idle_timeout=idle_timeout,
                 hard_timeout=hard_timeout,
@@ -263,10 +276,11 @@ class FlowManager:
         k = desc.key
         if self.log_enabled:
             self.log.info(
-                "[FLOW] install cookie=%s class=%s stable=%s:%s src=%s:%s dst=%s:%s proto=%s path=%s",
+                "[FLOW] install cookie=%s class=%s stable=%s:%s queue=%s src=%s:%s dst=%s:%s proto=%s path=%s",
                 hex(cookie),
                 self.cookie_class.get(cookie, "BE"),
                 stable_side or "-", stable_port if stable_port is not None else "-",
+                queue_id if queue_id is not None else "-",
                 k.ip_src or "-", k.l4_src if k.l4_src is not None else "-",
                 k.ip_dst or "-", k.l4_dst if k.l4_dst is not None else "-",
                 k.ip_proto if k.ip_proto is not None else "-",
@@ -285,6 +299,7 @@ class FlowManager:
             ofp = dp.ofproto
             mod = parser.OFPFlowMod(
                 datapath=dp,
+                table_id=ofp.OFPTT_ALL,
                 command=ofp.OFPFC_DELETE,
                 out_port=ofp.OFPP_ANY,
                 out_group=ofp.OFPG_ANY,
@@ -294,7 +309,7 @@ class FlowManager:
             )
             dp.send_msg(mod)
 
-    def reroute_cookie(self, old_cookie: int, new_path: List[int]) -> Optional[int]:
+    def reroute_cookie(self, old_cookie: int, new_path: List[int], table_id: int = 0) -> Optional[int]:
         """Make-before-break: instala versión nueva, barrier, borra versión vieja, actualiza índices."""
         desc = self.cookie_desc.get(old_cookie)
         dst_mac = desc.key.dst_mac if desc else None
@@ -306,7 +321,7 @@ class FlowManager:
         new_cookie = self.next_cookie(old_cookie)
 
         # install new
-        self.install_path(desc, new_cookie, new_path, self.hosts[dst_mac][1])
+        self.install_path(desc, new_cookie, new_path, self.hosts[dst_mac][1], table_id=table_id)
         # barrier on all dps in new path
         if self.use_barrier:
             for dpid in set(new_path):
