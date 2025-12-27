@@ -1,16 +1,10 @@
-#controller:
-#  name: "ryu-ctrl"
-#  image: "controller_ryu"
-#  command: "--observe-links /app/app.py"
-#  volumes:
-#    - "../../containers/core/controller/baseline:/app"
 controller:
   name: "ryu-ctrl"
   image: "controller_ryu"
   command: "--observe-links --config-file /app/baseline_te2/ryu.conf --ofp-listen-host 0.0.0.0 --ofp-tcp-listen-port 6653 baseline_te2.app"
   volumes:
     - "../../containers/core/controller/baseline_te2:/app/baseline_te2"
-    - "./topology_conf.yml:/app/topology_conf.yml:ro"
+    - "./:/app/exp"
 
 qos:
   enabled: true

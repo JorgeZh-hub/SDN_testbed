@@ -37,7 +37,6 @@ CONTAINERNET_CONTAINER_NAME="containernet-sim"
 
 CAPTURE_SCRIPT="$TESTBED_DIR/scripts/capture_links.sh"
 METRICS_SCRIPT="$TESTBED_DIR/scripts/capture_containers_metrics.sh"
-OVS_METRICS_SCRIPT="$TESTBED_DIR/scripts/capture_ovs_metrics.sh"
 STOP_CONTAINERS="$TESTBED_DIR/scripts/stop_containers.sh"
 PARSE_CONTROLLER_SCRIPT="$SCRIPT_DIR/parse_controller_from_top.py"
 PARSE_CAPTURE_SCRIPT="$SCRIPT_DIR/parse_capture_conf.py"
@@ -55,10 +54,6 @@ LOG_DIR="$TESTBED_DIR/results/logs"
 METRICS_DIR="$TESTBED_DIR/results/metrics"
 METRICS_CONTAINERS=()
 METRICS_INTERVAL=1
-LINKS_METRICS_DIR="$TESTBED_DIR/results/link_metrics"
-LINKS=()
-LINKS_INTERVAL=1
-QUEUE_ANALYZER=0
 TOPOLOGY_FILE_REL="${TOPOLOGY_FILE:-$DEFAULT_TOPOLOGY_FILE_REL}"
 CAPTURE_CONF_REL="${CAPTURE_CONF:-$DEFAULT_CAPTURE_CONF_REL}"
 # Absolute path to topology on host (used to read controller cfg)
@@ -92,9 +87,6 @@ Options:
   --startup-buffer <s>    (unused) reserved buffer time (default: ${STARTUP_BUFFER}s).
   --metrics-dir <dir>     Directory for container metrics CSV (default: ${METRICS_DIR}).
   --metrics-interval <s>  Sampling interval for metrics (default: ${METRICS_INTERVAL}s).
-  --links-metrics-dir <d> Directory for OVS link metrics CSV (default: ${LINKS_METRICS_DIR}).
-  --links-interval <s>    Sampling interval for link metrics (default: ${LINKS_INTERVAL}s).
-  --queue-analyzer        Enable queue analyzer in OVS metrics.
   --capture-conf <file>   Capture configuration YAML (default: ${CAPTURE_CONF_REL}).
   --help                  Show this help.
 EOF
@@ -129,18 +121,6 @@ while [[ $# -gt 0 ]]; do
         --metrics-interval)
             METRICS_INTERVAL="$2"
             shift 2
-            ;;
-        --links-metrics-dir)
-            LINKS_METRICS_DIR="$2"
-            shift 2
-            ;;
-        --links-interval)
-            LINKS_INTERVAL="$2"
-            shift 2
-            ;;
-        --queue-analyzer)
-            QUEUE_ANALYZER=1
-            shift
             ;;
         --capture-conf)
             CAPTURE_CONF_REL="$2"
@@ -198,10 +178,6 @@ if [[ -f "$CAPTURE_CONF_HOST" ]]; then
                 val="${line#CONTAINER=}"
                 unique_append METRICS_CONTAINERS "$val"
                 ;;
-            LINK=*)
-                val="${line#LINK=}"
-                unique_append LINKS "$val"
-                ;;
         esac
     done < <(
         HOST_PROJECT_ROOT="$TESTBED_DIR" python3 "$PARSE_CAPTURE_SCRIPT" \
@@ -219,12 +195,11 @@ fi
 # Prepare directories and run ID           #
 #############################################
 
-mkdir -p "$LOG_DIR" "$CAPTURE_DIR" "$METRICS_DIR" "$LINKS_METRICS_DIR"
+mkdir -p "$LOG_DIR" "$CAPTURE_DIR" "$METRICS_DIR"
 RUN_ID=$(date +"%Y%m%d_%H%M%S")
 
 CAPTURE_PID=""
 METRICS_PID=""
-OVS_METRICS_PID=""
 SIM_STARTED=0
 STOPPED_CONTAINERS=0
 CTRL_LOG_PID=""
@@ -279,7 +254,6 @@ cleanup() {
     # Stop captures if still running
     stop_process "${CAPTURE_PID}" "CAPTURE"
     stop_process "${METRICS_PID}" "METRICS"
-    stop_process "${OVS_METRICS_PID}" "OVS"
 
     # Stop Containernet container if running
     if "${DOCKER[@]}" ps -q -f "name=^${CONTAINERNET_CONTAINER_NAME}$" >/dev/null; then
@@ -467,25 +441,6 @@ start_metrics() {
 # Start OVS link metrics capture           #
 #############################################
 
-start_ovs_metrics() {
-    if [[ ${#LINKS[@]} -eq 0 ]]; then
-        return
-    fi
-
-    echo "[OVS] Starting link metrics capture for links: ${LINKS[*]}"
-    local cmd=(sudo "$OVS_METRICS_SCRIPT")
-    cmd+=("${LINKS[@]}")
-    cmd+=(-o "$LINKS_METRICS_DIR" -i "$LINKS_INTERVAL")
-    if [[ "$QUEUE_ANALYZER" -eq 1 ]]; then
-        cmd+=(--queue-analyzer)
-    fi
-
-    local log_file="${LOG_DIR}/ovs_metrics_${RUN_ID}.log"
-    "${cmd[@]}" >"$log_file" 2>&1 &
-    OVS_METRICS_PID=$!
-
-    echo "[OVS] Capture is running (PID $OVS_METRICS_PID). Log: ${log_file}"
-}
 
 stop_captures() {
     stop_process "${CAPTURE_PID}" "CAPTURE"
@@ -497,10 +452,6 @@ stop_metrics() {
     METRICS_PID=""
 }
 
-stop_ovs_metrics() {
-    stop_process "${OVS_METRICS_PID}" "OVS"
-    OVS_METRICS_PID=""
-}
 
 #############################################
 # Start Containernet simulation container  #
@@ -565,10 +516,6 @@ if [[ ${#METRICS_CONTAINERS[@]} -gt 0 ]]; then
     echo "Metrics containers:    ${METRICS_CONTAINERS[*]}"
     echo "Metrics dir:           ${METRICS_DIR} (interval ${METRICS_INTERVAL}s)"
 fi
-if [[ ${#LINKS[@]} -gt 0 ]]; then
-    echo "OVS links:             ${LINKS[*]}"
-    echo "OVS metrics dir:       ${LINKS_METRICS_DIR} (interval ${LINKS_INTERVAL}s, queue analyzer ${QUEUE_ANALYZER})"
-fi
 echo "==================================="
 
 # Go to testbed directory to keep relative paths consistent
@@ -581,7 +528,6 @@ start_captures
 sleep 1
 start_metrics
 sleep 1
-start_ovs_metrics
 
 echo "[MAIN] Running experiment for ${TOTAL_DURATION}s..."
 sleep "$TOTAL_DURATION"
@@ -589,7 +535,6 @@ sleep "$TOTAL_DURATION"
 # Stop captures before tearing down topology
 stop_captures
 stop_metrics
-stop_ovs_metrics
 echo "[MAIN] Captures and metrics stopped."
 
 # Stop simulation container after captures

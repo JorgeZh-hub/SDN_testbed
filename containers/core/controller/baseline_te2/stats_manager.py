@@ -1,8 +1,10 @@
 # stats_manager.py
 from __future__ import annotations
 
+import csv
+import os
 from collections import defaultdict
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 from .utils import now
 
@@ -21,7 +23,8 @@ class StatsManager:
                  portstats_period: float = 1.0,
                  flowstats_period: float = 5.0,
                  app_id: int = 0xBEEF,
-                 log_enabled: bool = True):
+                 log_enabled: bool = True,
+                 csv_dir: Optional[str] = None):
         self.topo = topo
         self.flow_mgr = flow_mgr
         self.log = logger
@@ -40,18 +43,45 @@ class StatsManager:
         # port counter history: dpid->port->(bytes,ts)
         self._prev_tx_bytes = defaultdict(lambda: defaultdict(int))
         self._prev_ts = defaultdict(lambda: defaultdict(float))
+        self._prev_rx_drop = defaultdict(lambda: defaultdict(int))
+        self._prev_tx_drop = defaultdict(lambda: defaultdict(int))
 
         # directed-link metrics
         self.link_load_mbps = defaultdict(float)  # e=(u,v)->Lhat
         self.link_capacity_mbps = defaultdict(lambda: self.default_capacity_mbps)
         self.hot_counter = defaultdict(int)       # e->consecutive
 
-        # flow counter history: cookie->(bytes,ts)
-        self._prev_cookie_bytes = defaultdict(int)
-        self._prev_cookie_ts = defaultdict(float)
+        # flow counter history: dpid->cookie->(bytes,ts)
+        self._prev_cookie_bytes = defaultdict(dict)
+        self._prev_cookie_ts = defaultdict(dict)
 
         # thread handles (optional)
         self._running = False
+
+        # CSV export (minimal, no extra config)
+        if csv_dir:
+            self._csv_dir = os.path.abspath(csv_dir)
+        else:
+            self._csv_dir = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "src", "experiments")
+            )
+        try:
+            os.makedirs(self._csv_dir, exist_ok=True)
+        except OSError:
+            self._csv_dir = "."
+        self._link_csv_path = os.path.join(self._csv_dir, "link_stats.csv")
+        self._flow_csv_path = os.path.join(self._csv_dir, "flow_stats.csv")
+        try:
+            self._link_csv_header_written = os.path.exists(self._link_csv_path) and os.path.getsize(self._link_csv_path) > 0
+        except OSError:
+            self._link_csv_header_written = False
+        try:
+            self._flow_csv_header_written = os.path.exists(self._flow_csv_path) and os.path.getsize(self._flow_csv_path) > 0
+        except OSError:
+            self._flow_csv_header_written = False
+
+        self._cookie_rate_by_dp = defaultdict(dict)
+        self._cookie_match = {}
 
     # -------- capacities --------
     def set_capacity(self, e: Tuple[int,int], cap_mbps: float):
@@ -81,6 +111,23 @@ class StatsManager:
         ts = now()
         dpid = dp.id
         updated = 0
+        csv_file = None
+        csv_writer = None
+        csv_file = open(self._link_csv_path, "a", newline="")
+        csv_writer = csv.writer(csv_file)
+        if not self._link_csv_header_written:
+            csv_writer.writerow([
+                "timestamp",
+                "src_dpid",
+                "dst_dpid",
+                "port_no",
+                "mbps",
+                "rx_drop",
+                "tx_drop",
+                "total_drop",
+                "util_pct",
+            ])
+            self._link_csv_header_written = True
         for stat in msg.body:
             port_no = stat.port_no
             # only consider ports that map to a neighbor (directed link)
@@ -93,6 +140,16 @@ class StatsManager:
             dt = max(1e-3, ts - prev_t)
             delta = max(0, int(stat.tx_bytes) - int(prev_b))
             mbps = (delta * 8.0 / 1e6) / dt
+            rx_drop = int(getattr(stat, "rx_dropped", 0))
+            tx_drop = int(getattr(stat, "tx_dropped", 0))
+            prev_rx_drop = self._prev_rx_drop[dpid][port_no]
+            prev_tx_drop = self._prev_tx_drop[dpid][port_no]
+            rx_drop_delta = max(0, rx_drop - prev_rx_drop)
+            tx_drop_delta = max(0, tx_drop - prev_tx_drop)
+            total_drop = rx_drop_delta + tx_drop_delta
+            rx_drop_rate = rx_drop_delta / dt
+            tx_drop_rate = tx_drop_delta / dt
+            total_drop_rate = total_drop / dt
 
             e = (dpid, v)
             old = self.link_load_mbps.get(e, 0.0)
@@ -108,7 +165,23 @@ class StatsManager:
 
             self._prev_tx_bytes[dpid][port_no] = int(stat.tx_bytes)
             self._prev_ts[dpid][port_no] = ts
+            self._prev_rx_drop[dpid][port_no] = rx_drop
+            self._prev_tx_drop[dpid][port_no] = tx_drop
             updated += 1
+            if csv_writer is not None:
+                cap = self.capacity_mbps(e)
+                u_inst = (mbps / cap) if cap > 0 else 0.0
+                csv_writer.writerow([
+                    f"{ts:.6f}",
+                    dpid,
+                    v,
+                    port_no,
+                    f"{mbps:.6f}",
+                    f"{rx_drop_rate:.3f}",
+                    f"{tx_drop_rate:.3f}",
+                    f"{total_drop_rate:.3f}",
+                    f"{u_inst * 100.0:.3f}",
+                ])
             if self.log_enabled:
                 port_name = self.topo.get_port_name(dpid, port_no) or ""
                 self.log.info(
@@ -122,6 +195,8 @@ class StatsManager:
                     u,
                     self.hot_counter.get(e, 0),
                 )
+        if csv_file is not None:
+            csv_file.close()
         if self.log_enabled and updated:
             hot_now = {e: self.hot_counter[e] for e in self.hot_counter if self.hot_counter[e] > 0}
             self.log.info("[STATS] port_reply dpid=%s updated_ports=%s hot=%s", dpid, updated, hot_now)
@@ -147,28 +222,59 @@ class StatsManager:
 
     def handle_flow_stats_reply(self, dp, msg):
         ts = now()
+        dpid = dp.id
         # We'll estimate cookie rate by byte delta / dt and EWMA.
         # Important: stats come per-switch; we conservatively take max across switches in FlowManager.
         updated = 0
+        csv_file = None
+        csv_writer = None
+        csv_file = open(self._flow_csv_path, "a", newline="")
+        csv_writer = csv.writer(csv_file)
+        if not self._flow_csv_header_written:
+            csv_writer.writerow([
+                "timestamp",
+                "cookie",
+                "match",
+                "avg_mbps",
+            ])
+            self._flow_csv_header_written = True
         for st in msg.body:
             cookie = int(st.cookie)
             byte_count = int(getattr(st, "byte_count", 0))
-            prev_b = self._prev_cookie_bytes.get(cookie, None)
-            prev_t = self._prev_cookie_ts.get(cookie, None)
+            prev_b = self._prev_cookie_bytes[dpid].get(cookie, None)
+            prev_t = self._prev_cookie_ts[dpid].get(cookie, None)
             if prev_b is None or prev_t is None:
-                self._prev_cookie_bytes[cookie] = byte_count
-                self._prev_cookie_ts[cookie] = ts
+                self._prev_cookie_bytes[dpid][cookie] = byte_count
+                self._prev_cookie_ts[dpid][cookie] = ts
                 continue
             dt = max(1e-3, ts - prev_t)
             delta = max(0, byte_count - prev_b)
             mbps = (delta * 8.0 / 1e6) / dt
 
-            self._prev_cookie_bytes[cookie] = byte_count
-            self._prev_cookie_ts[cookie] = ts
+            self._prev_cookie_bytes[dpid][cookie] = byte_count
+            self._prev_cookie_ts[dpid][cookie] = ts
 
             # feed FlowManager
             self.flow_mgr.update_cookie_rate(cookie, mbps, alpha=self.alpha_flow)
             updated += 1
+            if csv_writer is not None:
+                self._cookie_rate_by_dp[cookie][dpid] = (mbps, ts)
+                stale = [
+                    k for k, (_, t_last) in self._cookie_rate_by_dp[cookie].items()
+                    if ts - t_last > (self.flowstats_period * 2.0)
+                ]
+                for k in stale:
+                    self._cookie_rate_by_dp[cookie].pop(k, None)
+                rates = [v for v, _ in self._cookie_rate_by_dp[cookie].values()]
+                avg_mbps = (sum(rates) / len(rates)) if rates else 0.0
+                match_str = str(getattr(st, "match", "-"))
+                self._cookie_match[cookie] = match_str
+                csv_writer.writerow([
+                    f"{ts:.6f}",
+                    hex(cookie),
+                    match_str,
+                    f"{avg_mbps:.6f}",
+                ])
             if self.log_enabled:
                 cls = self.flow_mgr.cookie_class.get(cookie, "-")
                 path = self.flow_mgr.cookie_path.get(cookie, [])
@@ -179,6 +285,8 @@ class StatsManager:
                     mbps,
                     path,
                 )
+        if csv_file is not None:
+            csv_file.close()
         if self.log_enabled and updated:
             self.log.info("[STATS] flow_reply cookies=%s", updated)
 

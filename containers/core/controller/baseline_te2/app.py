@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 from __future__ import annotations
 
+import os
 import time
 
 from ryu.base import app_manager
@@ -73,6 +74,7 @@ class ReactiveIoTTE13(app_manager.RyuApp):
 
         te_data = load_yaml(te_path) if te_path else {}
         top_data = load_yaml(top_path) if top_path else {}
+        csv_dir = os.path.dirname(top_path) if top_path else None
 
         self.log_topo = CONF.logger_topology_manager
 
@@ -103,6 +105,7 @@ class ReactiveIoTTE13(app_manager.RyuApp):
             flowstats_period=CONF.flowstats_period,
             app_id=CONF.app_id,
             log_enabled=CONF.logger_stats,
+            csv_dir=csv_dir,
         )
         self.path_engine = PathEngine(self.topo, self.stats, self.logger)
         self.te = TEEngine(

@@ -31,7 +31,7 @@ warmup:
 
 loss:
   sent_basis: "count_a" # count_a recomendado (si existe); fallback: count
-  include_negative_loss: false # tu opción clave
+  include_negative_loss: true # tu opción clave
   negative_policy: "clamp0" # clamp0 | keep (keep solo aplica si include_negative_loss=true)
 
 throughput:
@@ -59,7 +59,7 @@ stats:
     method: "t" # requiere scipy para exacto; si no, fallback 1.96
 
 outputs:
-  out_dir: "data/processed/flows_flows"
+  out_dir: "data/processed/flows"
   csv:
     rep_summary_flow: "rep_summary_flow.csv"
     rep_summary_protocol: "rep_summary_protocol.csv"
@@ -68,7 +68,7 @@ outputs:
     ts_throughput_flow: "ts_throughput_flow.csv"
     ts_throughput_protocol: "ts_throughput_protocol.csv"
     missing: "missing_flows.csv"
-  plots_dir: "data/processed/flows_flows/plots"
+  plots_dir: "data/processed/flows/plots"
 plots:
   # 1) Delay promedio final vs carga (una curva por controlador) - POR PROTOCOLO
   delay_vs_load:

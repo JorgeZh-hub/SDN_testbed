@@ -21,6 +21,41 @@ def write_yaml(data, path):
         yaml.safe_dump(data, f, sort_keys=False)
 
 
+def move_controller_csvs(csv_root: Path, report_dir: Path):
+    """
+    Move controller CSVs generated alongside topology_conf into this repetition's report dir.
+    """
+    ovs_dir = report_dir / "ovs"
+    flows_dir = report_dir / "flows"
+    ovs_dir.mkdir(parents=True, exist_ok=True)
+    flows_dir.mkdir(parents=True, exist_ok=True)
+
+    link_candidates = [
+        csv_root / "ovs" / "link_stats.csv",
+        csv_root / "link_stats.csv",
+    ]
+    flow_candidates = [
+        csv_root / "flows" / "flow_stats.csv",
+        csv_root / "flow_stats.csv",
+    ]
+
+    for src in link_candidates:
+        if src.exists():
+            dest = ovs_dir / "link_stats.csv"
+            if dest.exists():
+                dest.unlink()
+            shutil.move(str(src), str(dest))
+            break
+
+    for src in flow_candidates:
+        if src.exists():
+            dest = flows_dir / "flow_stats.csv"
+            if dest.exists():
+                dest.unlink()
+            shutil.move(str(src), str(dest))
+            break
+
+
 def slugify(text):
     safe = "".join(c if c.isalnum() or c in (".", "-", "_") else "_" for c in text.strip())
     return safe or "scenario"
@@ -171,11 +206,6 @@ def main():
         help="YAML with flows/links/containers capture configuration.",
     )
     parser.add_argument(
-        "--queue-analyzer",
-        action="store_true",
-        help="Enable queue analyzer in capture_ovs_metrics (default: disabled).",
-    )
-    parser.add_argument(
         "--output-root",
         default="scenario_runs",
         help="Directory to store per-scenario results.",
@@ -202,6 +232,11 @@ def main():
         type=float,
         default=0.1,
         help="Scale step to generate scenarios from the base.",
+    )
+    parser.add_argument(
+        "--modify-scenarios-csv",
+        action="store_true",
+        help="Generate scaled scenarios and overwrite scenarios CSV; if not set, use scenarios as-is.",
     )
     parser.add_argument(
         "--python",
@@ -257,9 +292,19 @@ def main():
     if args.repetitions <= 0:
         raise ValueError("repetitions must be >= 1")
 
-    scenario_col, container_cols, scenarios = generate_scaled_scenarios(
-        args.scenarios_csv, args.alpha_scale, args.alpha_interval
-    )
+    if args.modify_scenarios_csv:
+        scenario_col, container_cols, scenarios = generate_scaled_scenarios(
+            args.scenarios_csv, args.alpha_scale, args.alpha_interval
+        )
+    else:
+        # Leer escenarios tal cual del CSV sin modificarlo
+        with open(args.scenarios_csv, newline="") as f:
+            reader = list(csv.DictReader(f))
+        if not reader:
+            raise ValueError(f"{args.scenarios_csv} está vacío")
+        scenario_col = reader[0].keys().__iter__().__next__()
+        container_cols = [c for c in reader[0].keys() if c != scenario_col]
+        scenarios = reader
 
     for idx, row in enumerate(scenarios, start=1):
         scenario_name = row.get(scenario_col, f"scenario_{idx}")
@@ -322,12 +367,10 @@ def main():
             report_dir = rep_dir / "reports"
             flows_dir = report_dir / "flows"
             containers_dir = report_dir / "containers"
-            ovs_dir = report_dir / "ovs"
             logs_dir = rep_dir / "logs"
             capture_dir.mkdir(parents=True, exist_ok=True)
             flows_dir.mkdir(parents=True, exist_ok=True)
             containers_dir.mkdir(parents=True, exist_ok=True)
-            ovs_dir.mkdir(parents=True, exist_ok=True)
             logs_dir.mkdir(parents=True, exist_ok=True)
 
             env = env_base.copy()
@@ -344,11 +387,7 @@ def main():
                 str(capture_conf_path),
                 "--metrics-dir",
                 str(containers_dir),
-                "--links-metrics-dir",
-                str(ovs_dir),
             ]
-            if args.queue_analyzer:
-                run_cmd.append("--queue-analyzer")
 
             print(f"🏃 [run {rep}/{args.repetitions}] Executing:", " ".join(run_cmd))
             run_log = logs_dir / "run_command.log"
@@ -366,6 +405,8 @@ def main():
                 if args.abort_on_error:
                     raise RuntimeError(msg)
                 continue
+
+            move_controller_csvs(scenario_dir, report_dir)
 
             pcaps = list(capture_dir.glob("*.pcap"))
             if not pcaps:
