@@ -1,2 +1,2 @@
 Scenario,cliRtp1_0,cliRtp1_1,cliRtp1_2,cliHttp1_0,cliHttp1_1,cliRtp2_0,cliRtp3_0,cliFtp0_0,cliUdp0_0,cliUdp1_0,cliUdp2_0
-a,2,4,2,4,2,20,10,10,4,4,4
+b,0,0,40,0,0,0,0,0,0,0,0

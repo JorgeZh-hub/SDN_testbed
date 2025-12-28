@@ -228,7 +228,7 @@ hosts:
           - [0, 30]
       - name: "2"
         n_proc: 0
-        comand_process: "./receive_rtsp_time.sh --ip 192.0.2.2 --path mivideo3 --duration {tiempo}"
+        comand_process: "./receive_rtsp_time.sh --ip 192.0.2.2 --path mivideo2 --duration {tiempo}"
         estados: ["OFF1", "OFF2", "ON1", "ON2"]
         q_matrix:
           - [-0.1, 0.0, 0.1, 0.0]
