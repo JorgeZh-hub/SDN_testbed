@@ -244,6 +244,11 @@ def main():
         help="Python command to run flow_resolver.py.",
     )
     parser.add_argument(
+        "--no-analyze-flows",
+        action="store_true",
+        help="Skip flow_resolver analysis (default: disabled).",
+    )
+    parser.add_argument(
         "-n",
         "--repetitions",
         type=int,
@@ -417,36 +422,39 @@ def main():
                     raise RuntimeError(warn_msg)
                 continue
 
-            resolver_cmd = [
-                args.python,
-                "src/analyzer/flow_resolver.py",
-                "--flows",
-                str(capture_conf_path),
-                "--topology",
-                str(scenario_topology),
-                "--pcaps",
-                str(capture_dir),
-                "--output-dir",
-                str(flows_dir),
-            ]
-            print(f"📊 [run {rep}/{args.repetitions}] Generating reports:", " ".join(resolver_cmd))
-            resolver_log = logs_dir / "resolver_command.log"
-            resolver_rc = 0
-            with open(resolver_log, "w") as lf:
-                proc = subprocess.Popen(resolver_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-                for line in proc.stdout:
-                    print(line, end="")
-                    lf.write(line)
-                resolver_rc = proc.wait()
-            if resolver_rc != 0:
-                msg = (
-                    f"❌ [run {rep}] flow_resolver failed (code {resolver_rc}); "
-                    f"see {resolver_log}"
-                )
-                print(msg)
-                if args.abort_on_error:
-                    raise RuntimeError(msg)
-                continue
+            if args.no_analyze_flows:
+                print(f"ℹ️ [run {rep}/{args.repetitions}] Flow analysis skipped (--no-analyze-flows).")
+            else:
+                resolver_cmd = [
+                    args.python,
+                    "src/analyzer/flow_resolver.py",
+                    "--flows",
+                    str(capture_conf_path),
+                    "--topology",
+                    str(scenario_topology),
+                    "--pcaps",
+                    str(capture_dir),
+                    "--output-dir",
+                    str(flows_dir),
+                ]
+                print(f"📊 [run {rep}/{args.repetitions}] Generating reports:", " ".join(resolver_cmd))
+                resolver_log = logs_dir / "resolver_command.log"
+                resolver_rc = 0
+                with open(resolver_log, "w") as lf:
+                    proc = subprocess.Popen(resolver_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                    for line in proc.stdout:
+                        print(line, end="")
+                        lf.write(line)
+                    resolver_rc = proc.wait()
+                if resolver_rc != 0:
+                    msg = (
+                        f"❌ [run {rep}] flow_resolver failed (code {resolver_rc}); "
+                        f"see {resolver_log}"
+                    )
+                    print(msg)
+                    if args.abort_on_error:
+                        raise RuntimeError(msg)
+                    continue
 
             # Opcional: limpiar PCAPs de la repetición si no se solicitaron
             if not args.include_pcaps and capture_dir.exists():
