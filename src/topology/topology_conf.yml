@@ -16,7 +16,7 @@ qos:
 hosts:
   brkMqtt0: # brokerIot0
     image: "mqtt_broker:latest"
-    ip: "203.0.113.1/24"
+    ip: "203.0.113.11/26"
     mac: "02:42:0a:00:00:01"
     comand_default:
       - "/usr/sbin/mosquitto -c /etc/mosquitto/mosquitto.conf -v; bash /app/tester_broker.sh"
@@ -26,7 +26,7 @@ hosts:
 
   brkAmqp0:
     image: "amqp_broker:latest"
-    ip: "203.0.113.8/24"
+    ip: "203.0.113.14/26"
     comand_default:
       - "bash /app/start_rabbit.sh"
     volumes:
@@ -35,18 +35,18 @@ hosts:
 
   cliMqtt0: # clientIot0
     image: "iot_container:latest"
-    ip: "203.0.113.17/24"
+    ip: "198.51.100.12/26"
     comand_default:
-      - "python3 subscriber.py --host 203.0.113.1 --topic events/ESP32_002/data"
-      - "python3 subscriber.py --host 203.0.113.1 --topic events/ESP32_002/data"
-      - "python3 subscriber.py --host 203.0.113.1 --topic events/ESP32_002/data"
-      - "python3 subscriber.py --host 203.0.113.1 --topic events/ESP32_002/data"
+      - "python3 subscriber.py --host 203.0.113.11 --topic events/ESP32_002/data"
+      - "python3 subscriber.py --host 203.0.113.11 --topic events/ESP32_002/data"
+      - "python3 subscriber.py --host 203.0.113.11 --topic events/ESP32_002/data"
+      - "python3 subscriber.py --host 203.0.113.11 --topic events/ESP32_002/data"
     volumes:
       - "../../containers/services/iot_container:/app"
     flows:
       - name: "0"
         n_proc: 0
-        comand_process: "python3 subscriber.py --host 203.0.113.1 --topic events/ESP32_002/data --duration {tiempo}"
+        comand_process: "python3 subscriber.py --host 203.0.113.11 --topic events/ESP32_002/data --duration {tiempo}"
         estados: ["OFF1", "OFF2", "ON1", "ON2"]
         q_matrix:
           - [-0.5, 0.0, 0.5, 0.0]
@@ -61,22 +61,23 @@ hosts:
 
   brkMqtt1: # brokerIot1
     image: "mqtt_broker:latest"
-    ip: "203.0.113.6/24"
+    ip: "203.0.113.13/26"
     mac: "02:42:0a:00:00:02"
     comand_default:
       - "/usr/sbin/mosquitto -c /etc/mosquitto/mosquitto.conf -v; bash /app/tester_broker.sh"
     volumes:
       - "../../containers/services/mqtt_broker/mosquitto.conf:/etc/mosquitto/mosquitto.conf:ro"
       - "../../containers/services/mqtt_broker/tester_broker.sh:/app/tester_broker.sh:ro"
+
   cliMqtt1: # clientIot3
     image: "iot_container:latest"
-    ip: "192.51.100.28/24"
+    ip: "198.51.100.11/26"
     volumes:
       - "../../containers/services/iot_container:/app"
     flows:
       - name: "0"
         n_proc: 4
-        comand_process: "python3 subscriber.py --host 203.0.113.6 --topic sensores/medidas --duration {tiempo}"
+        comand_process: "python3 subscriber.py --host 203.0.113.13 --topic sensores/medidas --duration {tiempo}"
         estados: ["OFF1", "OFF2", "ON1", "ON2"]
         q_matrix:
           - [-0.5, 0.0, 0.5, 0.0]
@@ -91,30 +92,30 @@ hosts:
 
   srvHttp0: # serverIot1
     image: "iot_container:latest"
-    ip: "203.0.113.2/24"
+    ip: "203.0.113.10/26"
     volumes:
       - "../../containers/services/iot_container:/app"
     comand_default:
       - "./start_http.sh -w 8 -T 16 -P 5000"
 
-  srvHttp1: # serverVod0
+  srvVoD0: # serverVod0
     image: "http_server_vod:latest"
-    ip: "192.0.2.1/24"
+    ip: "203.0.113.85/26"
     volumes:
       - "../../containers/services/http_server_vod/nginx.conf:/etc/nginx/nginx.conf:ro"
       - "../../data/videos/vod_http:/usr/share/nginx/html/videos:ro"
     comand_default:
       - 'nginx -g "daemon off;"'
 
-  cliHttp1: # clientVod0
+  cliVoD0: # clientVod0
     image: "rtp_receiver_vod:latest"
-    ip: "192.51.100.17/24"
+    ip: "198.51.100.89/26"
     volumes:
       - "../../containers/services/rtp_receiver_vod:/app:ro"
     flows:
       - name: "0"
         n_proc: 0
-        comand_process: "./get_nginx_video_time.sh --ip 192.0.2.1 --video hubble.mp4 --duration {tiempo}"
+        comand_process: "./get_nginx_video_time.sh --ip 203.0.113.85 --video hubble.mp4 --duration {tiempo}"
         estados: ["OFF1", "OFF2", "ON1", "ON2"]
         q_matrix:
           - [-0.1, 0.0, 0.1, 0.0]
@@ -128,7 +129,7 @@ hosts:
           - [0, 30]
       - name: "1"
         n_proc: 0
-        comand_process: "./get_nginx_hls.sh --ip 192.0.2.1 --path videos/hls/4k_JF/index.m3u8 --duration {tiempo}"
+        comand_process: "./get_nginx_hls.sh --ip 203.0.113.85 --path videos/hls/4k_JF/index.m3u8 --duration {tiempo}"
         estados: ["OFF1", "OFF2", "ON1", "ON2"]
         q_matrix:
           - [-0.1, 0.0, 0.1, 0.0]
@@ -143,7 +144,7 @@ hosts:
 
   srvFtp0:
     image: "ftp_server:latest"
-    ip: "203.0.113.7/24"
+    ip: "203.0.113.87/26"
     volumes:
       - "../../containers/services/ftp_server/vsftpd.conf:/etc/vsftpd/vsftpd.conf:ro"
       - "../../data/ftp:/data"
@@ -158,13 +159,13 @@ hosts:
 
   cliFtp0:
     image: "rtp_receiver_vod:latest"
-    ip: "192.51.100.100/24"
+    ip: "198.51.100.88/26"
     volumes:
       - "../../containers/services/rtp_receiver_vod:/app:ro"
     flows:
       - name: "0"
         n_proc: 0
-        comand_process: "./ftp_client.sh -s 203.0.113.7 -f /bigfile.bin -U ftpuser -W ftppass -T {tiempo}"
+        comand_process: "./ftp_client.sh -s 203.0.113.87 -f /bigfile.bin -U ftpuser -W ftppass -T {tiempo}"
         estados: ["OFF1", "ON1"]
         q_matrix:
           - [-0.1, 0.1]
@@ -173,62 +174,34 @@ hosts:
           - [0, 30]
           - [40, 100]
 
-  srvRtp0: # serverVod1
+  srvIpTV0: # serverVod1
     image: "rtp_server_vod:latest"
-    ip: "192.0.2.2/24"
+    ip: "203.0.113.84/26"
     volumes:
       - "../../containers/services/rtp_server_vod/:/etc/mediamtx/:ro"
     comand_default:
       - "/usr/local/bin/mediamtx"
 
-  cliRtp0: # clientVod1
+  emIpTV0: # clientVod1
     image: "rtp_emitter_vod:latest"
-    ip: "192.51.100.18/24"
+    ip: "198.51.100.80/26"
     volumes:
       - "../../containers/services/rtp_emitter_vod:/app:ro"
       - "../../data/videos/vod_rtsp:/videos:ro"
     comand_default:
-      - "./send_rtsp.sh --ip 192.0.2.2 --path mivideo --video /videos/godzilla.mp4 --bw 1000"
-      - "./send_rtsp.sh --ip 192.0.2.2 --path mivideo2 --video /videos/video_4k_15M.mp4"
-      - "./send_rtsp.sh --ip 192.0.2.2 --path mivideo3 --video /videos/JF_4K_UHD.mp4"
+      - "./send_rtsp.sh --ip 203.0.113.84 --path mivideo --video /videos/godzilla.mp4 --bw 1000"
+      - "./send_rtsp.sh --ip 203.0.113.84 --path mivideo2 --video /videos/video_4k_15M.mp4"
+      - "./send_rtsp.sh --ip 203.0.113.84 --path mivideo3 --video /videos/JF_4K_UHD.mp4"
 
-  cliRtp1: # clientVod2
+  cliHLS0: # clientVod2
     image: "rtp_receiver_vod:latest"
-    ip: "192.51.100.21/24"
+    ip: "198.51.100.81/26"
     volumes:
       - "../../containers/services/rtp_receiver_vod:/app:ro"
     flows:
       - name: "0"
         n_proc: 0
-        comand_process: "./receive_hls_time.sh --ip 192.0.2.2 --path mivideo --duration {tiempo}"
-        estados: ["OFF1", "OFF2", "ON1", "ON2"]
-        q_matrix:
-          - [-0.1, 0.0, 0.1, 0.0]
-          - [0.0, -0.005, 0.0, 0.005]
-          - [0.004, 0.001, -0.005, 0.0]
-          - [0.01, 0.09, 0.0, -0.1]
-        limits:
-          - [5, 30]
-          - [150, 250]
-          - [100, 300]
-          - [0, 30]
-      - name: "1"
-        n_proc: 0
-        comand_process: "./receive_srt_time.sh --ip 192.0.2.2 --path mivideo2 --duration {tiempo}"
-        estados: ["OFF1", "OFF2", "ON1", "ON2"]
-        q_matrix:
-          - [-0.1, 0.0, 0.1, 0.0]
-          - [0.0, -0.005, 0.0, 0.005]
-          - [0.004, 0.001, -0.005, 0.0]
-          - [0.01, 0.09, 0.0, -0.1]
-        limits:
-          - [5, 30]
-          - [150, 250]
-          - [100, 300]
-          - [0, 30]
-      - name: "2"
-        n_proc: 0
-        comand_process: "./receive_rtsp_time.sh --ip 192.0.2.2 --path mivideo2 --duration {tiempo}"
+        comand_process: "./receive_hls_time.sh --ip 203.0.113.84 --path mivideo --duration {tiempo}"
         estados: ["OFF1", "OFF2", "ON1", "ON2"]
         q_matrix:
           - [-0.1, 0.0, 0.1, 0.0]
@@ -241,25 +214,67 @@ hosts:
           - [100, 300]
           - [0, 30]
 
-  srvRtp1: # serVoIP0
+  cliSRT0: # clientVod2
+    image: "rtp_receiver_vod:latest"
+    ip: "198.51.100.82/26"
+    volumes:
+      - "../../containers/services/rtp_receiver_vod:/app:ro"
+    flows:
+      - name: "0"
+        n_proc: 0
+        comand_process: "./receive_srt_time.sh --ip 203.0.113.84 --path mivideo2 --duration {tiempo}"
+        estados: ["OFF1", "OFF2", "ON1", "ON2"]
+        q_matrix:
+          - [-0.1, 0.0, 0.1, 0.0]
+          - [0.0, -0.005, 0.0, 0.005]
+          - [0.004, 0.001, -0.005, 0.0]
+          - [0.01, 0.09, 0.0, -0.1]
+        limits:
+          - [5, 30]
+          - [150, 250]
+          - [100, 300]
+          - [0, 30]
+
+  cliRtsp0: # clientVod2
+    image: "rtp_receiver_vod:latest"
+    ip: "198.51.100.83/26"
+    volumes:
+      - "../../containers/services/rtp_receiver_vod:/app:ro"
+    flows:
+      - name: "0"
+        n_proc: 0
+        comand_process: "./receive_rtsp_time.sh --ip 203.0.113.84 --path mivideo2 --duration {tiempo}"
+        estados: ["OFF1", "OFF2", "ON1", "ON2"]
+        q_matrix:
+          - [-0.1, 0.0, 0.1, 0.0]
+          - [0.0, -0.005, 0.0, 0.005]
+          - [0.004, 0.001, -0.005, 0.0]
+          - [0.01, 0.09, 0.0, -0.1]
+        limits:
+          - [5, 30]
+          - [150, 250]
+          - [100, 300]
+          - [0, 30]
+
+  srvVoIP0: # serVoIP0
     image: "rtp_container_voip:latest"
-    ip: "192.51.100.19/24"
+    ip: "203.0.113.80/26"
     volumes:
       - "../../containers/services/rtp_container_voip:/app:ro"
       - "../../data/voip:/data/voip:ro"
     comand_default:
-      - "cd /app/ && ./server.sh 192.51.100.19"
+      - "cd /app/ && ./server.sh 203.0.113.80"
 
-  cliRtp2: # cliVoIP0
+  cliVoIP0: # cliVoIP0
     image: "rtp_container_voip:latest"
-    ip: "192.51.100.20/24"
+    ip: "198.51.100.87/26"
     volumes:
       - "../../containers/services/rtp_container_voip:/app:ro"
       - "../../data/voip:/data/voip:ro"
     flows:
       - name: "0"
         n_proc: 0
-        comand_process: "cd /app/ && ./client_time.sh 192.51.100.19 192.51.100.20 --duration {tiempo}"
+        comand_process: "cd /app/ && ./client_time.sh 203.0.113.80 198.51.100.87 --duration {tiempo}"
         estados: ["OFF1", "OFF2", "ON1", "ON2"]
         q_matrix:
           - [-0.0167, 0.0, 0.0167, 0.0]
@@ -274,56 +289,56 @@ hosts:
 
   srvCoap0: # serverIot2
     image: "iot_container:latest"
-    ip: "203.0.113.3/24"
+    ip: "203.0.113.12/26"
     volumes:
       - "../../containers/services/iot_container:/app"
     comand_default:
       - "python3 coap_server.py"
 
-  cliCoap0: # emiCoap0
+  emiCoap0: # emiCoap0
     image: "iot_container:latest"
-    ip: "192.51.100.30/24"
+    ip: "198.51.100.13/26"
     volumes:
       - "../../containers/services/iot_container:/app"
     comand_default:
-      - "python3 coap_emisor.py 203.0.113.3 sensor/datos --bw 1" # 500kbps
-      - "python3 coap_emisor.py 203.0.113.3 sensor/datos2 --bw 1" # 500kbps
+      - "python3 coap_emisor.py 203.0.113.12 sensor/datos --bw 1" # 500kbps
+      - "python3 coap_emisor.py 203.0.113.12 sensor/datos2 --bw 1" # 500kbps
 
-  cliCoap1: # clientIot2
+  cliCoap0: # clientIot2
     image: "iot_container:latest"
-    ip: "203.0.113.19/24"
+    ip: "198.51.100.14/26"
     volumes:
       - "../../containers/services/iot_container:/app"
     comand_default:
-      - "python3 coap_client.py 203.0.113.3"
+      - "python3 coap_client.py 203.0.113.12"
 
-  srvWbS1: # serverIot3
+  srvWbS0: # serverIot3
     image: "iot_container:latest"
-    ip: "203.0.113.4/24"
+    ip: "203.0.113.15/26"
     volumes:
       - "../../containers/services/iot_container:/app"
     comand_default:
       - "python3 web_server.py"
 
-  srvRtp2: # serVC0
+  srvVC0: # serVC0
     image: "rtp_container_voip:latest"
-    ip: "192.51.100.101/24"
+    ip: "203.0.113.86/26"
     volumes:
       - "../../containers/services/rtp_container_voip:/app:ro"
       - "../../data/voip:/data/voip:ro"
     comand_default:
-      - "cd /app/ && ./server.sh 192.51.100.101"
+      - "cd /app/ && ./server.sh 203.0.113.86"
 
-  cliRtp3: # cliVC0
+  cliVC0: # cliVC0
     image: "rtp_container_voip:latest"
-    ip: "192.51.100.100/24"
+    ip: "198.51.100.90/26"
     volumes:
       - "../../containers/services/rtp_container_voip:/app:ro"
       - "../../data/voip:/data/voip:ro"
     flows:
       - name: "0"
         n_proc: 0
-        comand_process: "cd /app/ && ./client_timeVC.sh 192.51.100.101 192.51.100.100 --duration {tiempo}"
+        comand_process: "cd /app/ && ./client_timeVC.sh 203.0.113.86 198.51.100.90 --duration {tiempo}"
         estados: ["OFF1", "OFF2", "ON1", "ON2"]
         q_matrix:
           - [-0.0167, 0.0, 0.0167, 0.0]
@@ -338,7 +353,7 @@ hosts:
 
   srvUdp0: # userIperf0
     image: "rtp_receiver_vod:latest"
-    ip: "192.51.100.22/24"
+    ip: "203.0.113.81/26"
     volumes:
       - "../../containers/services/rtp_receiver_vod:/app:ro"
     comand_default:
@@ -346,7 +361,7 @@ hosts:
 
   srvUdp1: # userIperf1
     image: "rtp_receiver_vod:latest"
-    ip: "192.51.100.23/24"
+    ip: "203.0.113.82/26"
     volumes:
       - "../../containers/services/rtp_receiver_vod:/app:ro"
     comand_default:
@@ -354,7 +369,7 @@ hosts:
 
   srvUdp2: # userIperf2
     image: "rtp_receiver_vod:latest"
-    ip: "192.51.100.24/24"
+    ip: "203.0.113.83/26"
     volumes:
       - "../../containers/services/rtp_receiver_vod:/app:ro"
     comand_default:
@@ -362,13 +377,13 @@ hosts:
 
   cliUdp0: # userIperf3
     image: "rtp_receiver_vod:latest"
-    ip: "192.51.100.25/24"
+    ip: "198.51.100.84/26"
     volumes:
       - "../../containers/services/rtp_receiver_vod:/app:ro"
     flows:
       - name: "0"
         n_proc: 0
-        comand_process: "./iperf_client.sh -c 192.51.100.22 -u -b 1M -t {tiempo}"
+        comand_process: "./iperf_client.sh -c 203.0.113.81 -u -b 1M -t {tiempo}"
         estados: ["OFF1", "ON1"]
         q_matrix:
           - [-0.1, 0.1]
@@ -379,13 +394,13 @@ hosts:
 
   cliUdp1: # userIperf4
     image: "rtp_receiver_vod:latest"
-    ip: "192.51.100.26/24"
+    ip: "198.51.100.85/26"
     volumes:
       - "../../containers/services/rtp_receiver_vod:/app:ro"
     flows:
       - name: "0"
         n_proc: 0
-        comand_process: "./iperf_client.sh -c 192.51.100.23 -u -b 1M -t {tiempo}"
+        comand_process: "./iperf_client.sh -c 203.0.113.82 -u -b 1M -t {tiempo}"
         estados: ["OFF1", "ON1"]
         q_matrix:
           - [-0.1, 0.1]
@@ -396,13 +411,13 @@ hosts:
 
   cliUdp2: # userIperf5
     image: "rtp_receiver_vod:latest"
-    ip: "192.51.100.27/24"
+    ip: "198.51.100.86/26"
     volumes:
       - "../../containers/services/rtp_receiver_vod:/app:ro"
     flows:
       - name: "0"
         n_proc: 0
-        comand_process: "./iperf_client.sh -c 192.51.100.24 -u -b 1M -t {tiempo}"
+        comand_process: "./iperf_client.sh -c 203.0.113.83 -u -b 1M -t {tiempo}"
         estados: ["OFF1", "ON1"]
         q_matrix:
           - [-0.1, 0.1]
@@ -411,28 +426,28 @@ hosts:
           - [5, 15]
           - [5, 15]
 
-  cliMqtt2: # emiIot1
+  emiMqtt0: # emiIot1
     image: "iot_container:latest"
-    ip: "192.51.100.29/24"
+    ip: "198.51.100.10/26"
     volumes:
       - "../../containers/services/iot_container:/app"
     comand_default:
-      - "python3 mqtt_emisor.py --broker 203.0.113.1 --topic events/ESP32_002/data --bw-kbps 2500" # Sismico
-      - "python3 mqtt_emisor.py --broker 203.0.113.6 --topic sensores/seguridad --bw-kbps 2500" # Seguridad
-      - "python3 mqtt_emisor.py --broker 203.0.113.6 --topic sensores/medidas --bw-kbps 2500" # Medidas
+      - "python3 mqtt_emisor.py --broker 203.0.113.11 --topic events/ESP32_002/data --bw-kbps 2500" # Sismico
+      - "python3 mqtt_emisor.py --broker 203.0.113.13 --topic sensores/seguridad --bw-kbps 2500" # Seguridad
+      - "python3 mqtt_emisor.py --broker 203.0.113.13 --topic sensores/medidas --bw-kbps 2500" # Medidas
 
-  cliHttp0: # clientIot1
+  cliIoT0: # clientIot1
     image: "iot_container:latest"
-    ip: "203.0.113.18/24"
+    ip: "198.51.100.15/26"
     volumes:
       - "../../containers/services/iot_container:/app"
     comand_default:
-      - "python3 http_emisor.py --host 203.0.113.2 --path /datos --type PACIENTE --identifier 001 --bw-kbps 4000"
-      - "python3 http_emisor.py --host 203.0.113.2 --path /datos --type MEDICO --identifier 001 --bw-kbps 4000"
-      - "python3 web_publisher.py --host 203.0.113.4 --port 8080 --topics sensor/temp --bw 1"
-      - "python3 web_publisher.py --host 203.0.113.4 --port 8080 --topics sensor2/temp --bw 1"
-      - "python3 amqp_publisher.py --host 203.0.113.8 --user iotuser --password iotpass --queue iot_queue --bw 1"
-      - "python3 amqp_publisher.py --host 203.0.113.8 --user iotuser --password iotpass --queue iot_queue2 --bw 1"
+      - "python3 http_emisor.py --host 203.0.113.10 --path /datos --type PACIENTE --identifier 001 --bw-kbps 4000"
+      - "python3 http_emisor.py --host 203.0.113.10 --path /datos --type MEDICO --identifier 001 --bw-kbps 4000"
+      - "python3 web_publisher.py --host 203.0.113.15 --port 8080 --topics sensor/temp --bw 1"
+      - "python3 web_publisher.py --host 203.0.113.15 --port 8080 --topics sensor2/temp --bw 1"
+      - "python3 amqp_publisher.py --host 203.0.113.14 --user iotuser --password iotpass --queue iot_queue --bw 1"
+      - "python3 amqp_publisher.py --host 203.0.113.14 --user iotuser --password iotpass --queue iot_queue2 --bw 1"
 
 n_switches: 17
 links:
@@ -463,28 +478,28 @@ links:
   - link20: "switch4-eth3, switch15-eth1, 150" # acceso S15 no cuello
 
   # --- Hosts / Accesos (subir “elefantes” para que α escale) ---
-  - link21: "cliCoap0-eth0, switch3-eth2, 5"
-  - link22: "srvRtp1-eth0, switch3-eth3, 20"
-  - link23: "cliMqtt2-eth0, switch3-eth4, 5"
+  - link21: "emiCoap0-eth0, switch3-eth2, 5"
+  - link22: "srvVoIP0-eth0, switch3-eth3, 20"
+  - link23: "emiMqtt0-eth0, switch3-eth4, 5"
   - link24: "srvUdp2-eth0, switch3-eth5, 20"
 
-  - link25: "cliRtp0-eth0, switch11-eth2, 50"
+  - link25: "emIpTV0-eth0, switch11-eth2, 50"
 
-  - link26: "cliHttp0-eth0, switch12-eth2, 5"
-  - link27: "cliHttp1-eth0, switch12-eth3, 150" # ELEFANTE (VOD)
+  - link26: "cliIoT0-eth0, switch12-eth2, 5"
+  - link27: "cliVoD0-eth0, switch12-eth3, 150" # ELEFANTE (VOD)
   - link28: "srvUdp0-eth0, switch12-eth4, 20"
 
-  - link29: "cliRtp3-eth0, switch13-eth2, 50"
-  - link30: "cliRtp1-eth0, switch13-eth3, 200" # ELEFANTE (IPTV receptores)
+  - link29: "cliVC0-eth0, switch13-eth2, 50"
+  - link30: "cliRtsp0-eth0, switch13-eth3, 200" # ELEFANTE (IPTV receptores)
   - link31: "srvUdp1-eth0, switch13-eth4, 20"
 
   - link32: "cliMqtt1-eth0, switch14-eth2, 5"
-  - link33: "srvHttp1-eth0, switch14-eth3, 150" # ELEFANTE (VOD server)
-  - link34: "srvRtp0-eth0, switch14-eth4, 200" # ELEFANTE (IPTV server)
-  - link35: "srvRtp2-eth0, switch14-eth5, 50"
+  - link33: "srvVoD0-eth0, switch14-eth3, 150" # ELEFANTE (VOD server)
+  - link34: "srvIpTV0-eth0, switch14-eth4, 200" # ELEFANTE (IPTV server)
+  - link35: "srvVC0-eth0, switch14-eth5, 50"
 
   - link36: "srvHttp0-eth0, switch15-eth2, 20"
-  - link37: "srvWbS1-eth0, switch15-eth3, 20"
+  - link37: "srvWbS0-eth0, switch15-eth3, 20"
   - link38: "cliUdp0-eth0, switch15-eth4, 20"
 
   - link39: "brkMqtt0-eth0, switch16-eth2, 20"
@@ -493,10 +508,13 @@ links:
   - link42: "cliUdp1-eth0, switch16-eth5, 20"
 
   - link43: "cliMqtt0-eth0, switch17-eth2, 5"
-  - link44: "cliCoap1-eth0, switch17-eth3, 5"
-  - link45: "cliRtp2-eth0, switch17-eth4, 20"
+  - link44: "cliCoap0-eth0, switch17-eth3, 5"
+  - link45: "cliVoIP0-eth0, switch17-eth4, 20"
   - link46: "cliUdp2-eth0, switch17-eth5, 20"
 
   - link47: "srvFtp0-eth0, switch15-eth5, 50"
   - link48: "cliFtp0-eth0, switch12-eth5, 50"
   - link49: "brkAmqp0-eth0, switch13-eth5, 20"
+
+  - link50: "cliHLS0-eth0, switch11-eth3, 100" # ELEFANTE (VOD HLS)
+  - link51: "cliSRT0-eth0, switch11-eth4, 100" # ELEFANTE (VOD SRT)
