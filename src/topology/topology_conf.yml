@@ -383,7 +383,7 @@ hosts:
     flows:
       - name: "0"
         n_proc: 0
-        comand_process: "./iperf_client.sh -c 203.0.113.81 -u -b 1M -t {tiempo}"
+        comand_process: "./iperf_client.sh -c 203.0.113.81 -u -b 3M -t {tiempo}"
         estados: ["OFF1", "ON1"]
         q_matrix:
           - [-0.1, 0.1]
@@ -400,7 +400,7 @@ hosts:
     flows:
       - name: "0"
         n_proc: 0
-        comand_process: "./iperf_client.sh -c 203.0.113.82 -u -b 1M -t {tiempo}"
+        comand_process: "./iperf_client.sh -c 203.0.113.82 -u -b 3M -t {tiempo}"
         estados: ["OFF1", "ON1"]
         q_matrix:
           - [-0.1, 0.1]
@@ -417,7 +417,7 @@ hosts:
     flows:
       - name: "0"
         n_proc: 0
-        comand_process: "./iperf_client.sh -c 203.0.113.83 -u -b 1M -t {tiempo}"
+        comand_process: "./iperf_client.sh -c 203.0.113.83 -u -b 3M -t {tiempo}"
         estados: ["OFF1", "ON1"]
         q_matrix:
           - [-0.1, 0.1]
@@ -465,14 +465,14 @@ links:
   - link9: "switch5-eth2, switch6-eth3, 60" # ATAJO
   - link10: "switch5-eth3, switch7-eth1, 90"
   - link11: "switch5-eth4, switch16-eth1, 150" # acceso S16 no cuello
-  - link12: "switch7-eth2, switch17-eth1, 150" # acceso S17 no cuello
+  - link12: "switch7-eth2, switch17-eth1, 250" # acceso S17 no cuello
 
   - link13: "switch6-eth4, switch9-eth1, 60" # ATAJO (clave para hot-links)
   - link14: "switch7-eth3, switch9-eth2, 90"
   - link15: "switch8-eth1, switch9-eth3, 90"
   - link16: "switch8-eth2, switch10-eth3, 90"
 
-  - link17: "switch10-eth4, switch11-eth1, 100"
+  - link17: "switch10-eth4, switch11-eth1, 200"
   - link18: "switch9-eth4, switch12-eth1, 250" # uplink a S12 NO cuello
   - link19: "switch8-eth3, switch13-eth1, 250" # uplink a S13 NO cuello
   - link20: "switch4-eth3, switch15-eth1, 150" # acceso S15 no cuello
@@ -508,7 +508,7 @@ links:
   - link42: "cliUdp1-eth0, switch16-eth5, 20"
 
   - link43: "cliMqtt0-eth0, switch17-eth2, 5"
-  - link44: "cliCoap0-eth0, switch17-eth3, 5"
+  - link44: "cliSRT0-eth0, switch17-eth3, 100" # ELEFANTE (VOD SRT)
   - link45: "cliVoIP0-eth0, switch17-eth4, 20"
   - link46: "cliUdp2-eth0, switch17-eth5, 20"
 
@@ -517,4 +517,4 @@ links:
   - link49: "brkAmqp0-eth0, switch13-eth5, 20"
 
   - link50: "cliHLS0-eth0, switch11-eth3, 100" # ELEFANTE (VOD HLS)
-  - link51: "cliSRT0-eth0, switch11-eth4, 100" # ELEFANTE (VOD SRT)
+  - link51: "cliCoap0-eth0, switch11-eth4, 10"
