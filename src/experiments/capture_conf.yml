@@ -1,13 +1,13 @@
 flows:
   - name: "mqtt_sec_pub" # Dos flujos iguales
-    link: "cliMqtt2-brkMqtt1"
+    link: "emiMqtt0-brkMqtt1"
     protocol: "mqtt"
     transport: "tcp"
     dst_port: 1883
     extra_filter: ""
 
   - name: "mqtt_sis_pub"
-    link: "cliMqtt2-brkMqtt0"
+    link: "emiMqtt0-brkMqtt0"
     protocol: "mqtt"
     transport: "tcp"
     dst_port: 1883
@@ -28,71 +28,79 @@ flows:
     extra_filter: ""
 
   - name: "amqp_iot_pub"
-    link: "cliHttp0-brkAmqp0"
+    link: "cliIoT0-brkAmqp0"
     protocol: "amqp"
     transport: "tcp"
     dst_port: 5672
     extra_filter: ""
 
   - name: "http_med_post"
-    link: "cliHttp0-srvHttp0"
+    link: "cliIoT0-srvHttp0"
     protocol: "http"
     transport: "tcp"
     dst_port: 5000
     extra_filter: ""
 
   - name: "wb_iot_post"
-    link: "cliHttp0-srvWbS1"
+    link: "cliIoT0-srvWbS0"
     protocol: "http"
     transport: "tcp"
     dst_port: 8080
     extra_filter: ""
 
   - name: "coap_iot_sent"
-    link: "cliCoap0-srvCoap0"
+    link: "emiCoap0-srvCoap0"
     protocol: "coap"
     transport: "udp"
     extra_filter: "coap.mid"
 
   - name: "coap_iot_rec"
-    link: "srvCoap0-cliCoap1"
+    link: "srvCoap0-cliCoap0"
     protocol: "coap"
     transport: "udp"
     src_port: 5683
     extra_filter: "coap.mid"
 
   - name: "http_vod_get"
-    link: "srvHttp1-cliHttp1"
+    link: "srvVoD0-cliVoD0"
     protocol: "http"
     transport: "tcp"
     src_port: 80
     extra_filter: ""
 
   - name: "rtp_iptv_send"
-    link: "cliRtp0-srvRtp0"
+    link: "emIpTV0-srvIpTV0"
     protocol: "udp"
     transport: "udp"
     dst_port: 8000
     extra_filter: ""
     jitter: True
 
-  - name: "rtp_iptv_rec"
-    link: "srvRtp0-cliRtp1"
+  - name: "rtsp_iptv_rec"
+    link: "srvIpTV0-cliRtsp0"
     protocol: "rtp"
     transport: "tcp"
     src_port: 8554
     extra_filter: "rtp.seq"
     jitter: True
 
+  - name: "srt_iptv_rec"
+    link: "srvIpTV0-cliSRT0"
+    protocol: "udp"
+    transport: "udp"
+    src_port: 8890
+    extra_filter: ""
+    jitter: True
+
   - name: "rtp_voip"
-    link: "srvRtp1-cliRtp2"
+    link: "srvVoIP0-cliVoIP0"
     protocol: "rtp"
     transport: "udp"
     extra_filter: "rtp.seq"
     jitter: True
 
   - name: "rtp_vc"
-    link: "srvRtp2-cliRtp3"
+    link: "srvVC0-cliVC0"
     protocol: "rtp"
     transport: "udp"
     extra_filter: "rtp.seq"
@@ -122,14 +130,14 @@ links:
   - link9: "switch5-eth2, switch6-eth3, 60" # ATAJO
   - link10: "switch5-eth3, switch7-eth1, 90"
   - link11: "switch5-eth4, switch16-eth1, 150" # acceso S16 no cuello
-  - link12: "switch7-eth2, switch17-eth1, 150" # acceso S17 no cuello
+  - link12: "switch7-eth2, switch17-eth1, 250" # acceso S17 no cuello
 
   - link13: "switch6-eth4, switch9-eth1, 60" # ATAJO (clave para hot-links)
   - link14: "switch7-eth3, switch9-eth2, 90"
   - link15: "switch8-eth1, switch9-eth3, 90"
   - link16: "switch8-eth2, switch10-eth3, 90"
 
-  - link17: "switch10-eth4, switch11-eth1, 100"
+  - link17: "switch10-eth4, switch11-eth1, 200"
   - link18: "switch9-eth4, switch12-eth1, 250" # uplink a S12 NO cuello
   - link19: "switch8-eth3, switch13-eth1, 250" # uplink a S13 NO cuello
   - link20: "switch4-eth3, switch15-eth1, 150" # acceso S15 no cuello
