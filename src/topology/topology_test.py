@@ -204,7 +204,7 @@ try:
 
     info('*** (Optional) Connecting physical interface eno1 to switch11\n')
     # switches['switch3'].cmd('ovs-vsctl add-port switch3 eno1')
-    switches['switch11'].cmd('ovs-vsctl add-port switch11 eno1')
+    #switches['switch11'].cmd('ovs-vsctl add-port switch11 eno1')
 
     # ---------------------- Default commands in containers ----------------------
     info('*** Setting default commands in containers\n')

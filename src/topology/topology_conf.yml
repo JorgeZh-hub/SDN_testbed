@@ -127,7 +127,13 @@ hosts:
           - [150, 250]
           - [100, 300]
           - [0, 30]
-      - name: "1"
+  cliVoD1: # clientVod0
+    image: "rtp_receiver_vod:latest"
+    ip: "198.51.100.91/26"
+    volumes:
+      - "../../containers/services/rtp_receiver_vod:/app:ro"
+    flows:
+      - name: "0"
         n_proc: 0
         comand_process: "./get_nginx_hls.sh --ip 203.0.113.85 --path videos/hls/4k_JF/index.m3u8 --duration {tiempo}"
         estados: ["OFF1", "OFF2", "ON1", "ON2"]
@@ -472,7 +478,7 @@ links:
   - link15: "switch8-eth1, switch9-eth3, 90"
   - link16: "switch8-eth2, switch10-eth3, 90"
 
-  - link17: "switch10-eth4, switch11-eth1, 200"
+  - link17: "switch10-eth4, switch11-eth1, 300"
   - link18: "switch9-eth4, switch12-eth1, 250" # uplink a S12 NO cuello
   - link19: "switch8-eth3, switch13-eth1, 250" # uplink a S13 NO cuello
   - link20: "switch4-eth3, switch15-eth1, 150" # acceso S15 no cuello
@@ -518,3 +524,4 @@ links:
 
   - link50: "cliHLS0-eth0, switch11-eth3, 100" # ELEFANTE (VOD HLS)
   - link51: "cliCoap0-eth0, switch11-eth4, 10"
+  - link52: "cliVoD1-eth0, switch11-eth5, 100" # ELEFANTE (VOD 2)
