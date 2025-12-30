@@ -63,7 +63,7 @@ flows:
 
   - name: "http_vod_get"
     link: "srvVoD0-cliVoD1"
-    protocol: "http"
+    protocol: "tcp"
     transport: "tcp"
     src_port: 80
     extra_filter: ""
@@ -86,7 +86,7 @@ flows:
 
   - name: "srt_iptv_rec"
     link: "srvIpTV0-cliSRT0"
-    protocol: "udp"
+    protocol: "udt"
     transport: "udp"
     src_port: 8890
     extra_filter: ""

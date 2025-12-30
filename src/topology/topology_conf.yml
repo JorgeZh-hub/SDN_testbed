@@ -7,7 +7,7 @@ controller:
     - "./:/app/exp"
 
 qos:
-  enabled: true
+  enabled: false
   type: "linux-htb"
   default_queue_id: 0
   crit_queue_id: 1
