@@ -62,7 +62,7 @@ flows:
     extra_filter: "coap.mid"
 
   - name: "http_vod_get"
-    link: "srvVoD0-cliVoD0"
+    link: "srvVoD0-cliVoD1"
     protocol: "http"
     transport: "tcp"
     src_port: 80
