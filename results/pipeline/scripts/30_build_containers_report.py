@@ -20,6 +20,14 @@ import matplotlib.pyplot as plt
 def safe_mkdir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
 
+def read_csv_maybe_empty(path: Path) -> pd.DataFrame:
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
+
 def natural_load_key(s: str):
     # "1a" -> 1.0, "1.2a" -> 1.2, fallback: string
     m = re.match(r"^\s*([0-9]+(?:\.[0-9]+)?)", s)
@@ -438,6 +446,7 @@ def plot_timeseries_multi(ts_df: pd.DataFrame, out_path: Path, metric: str, cont
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/reports_containers.yml")
+    ap.add_argument("--regenerate-csvs", action="store_true", help="Recalcula y reescribe CSVs aunque ya existan.")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text())
@@ -463,187 +472,196 @@ def main():
     timeseries_path = out_dir / cfg["outputs"]["csv"]["timeseries_mean"]
     missing_path = out_dir / cfg["outputs"]["csv"]["missing"]
 
-    missing_rows = []
-    rep_rows = []
-    ts_rows = []
-
-    if not extracted_root.exists():
-        print(f"ERROR: extracted_root no existe: {extracted_root}")
-        return
-
-    controllers = sorted([p for p in extracted_root.iterdir() if p.is_dir()])
-    if not controllers:
-        print("WARNING: no se encontraron controladores en extracted_root.")
-        return
-
-    for ctrl_dir in controllers:
-        controller = ctrl_dir.name
-        loads = sorted([p for p in ctrl_dir.iterdir() if p.is_dir()], key=lambda p: natural_load_key(p.name))
-
-        for load_dir in loads:
-            load = load_dir.name
-            # busca todos los csv de contenedores (por rep)
-            csvs = list(load_dir.glob(glob_pat))
-            if not csvs:
-                missing_rows.append({
-                    "controller": controller, "load": load, "rep": None,
-                    "container": None, "path": str(load_dir), "reason": "no_csvs_found"
-                })
-                continue
-
-            for csv_path in sorted(csvs):
-                # parse rep_?
-                mrep = re.search(r"(rep_\d+)", str(csv_path))
-                rep = mrep.group(1) if mrep else "rep_unknown"
-                container = csv_path.stem
-
-                if container_filter and container not in container_filter:
-                    continue
-
-                try:
-                    df_raw = pd.read_csv(csv_path)
-                except Exception as e:
+    required_csvs = [rep_summary_path, load_summary_path, timeseries_path]
+    use_existing_csvs = (not args.regenerate_csvs and all(p.exists() for p in required_csvs))
+    if use_existing_csvs:
+        print("INFO: usando CSVs existentes (usa --regenerate-csvs para regenerarlos).")
+        rep_df = read_csv_maybe_empty(rep_summary_path)
+        load_df = read_csv_maybe_empty(load_summary_path)
+        ts_mean_df = read_csv_maybe_empty(timeseries_path)
+        miss_df = read_csv_maybe_empty(missing_path)
+    else:
+        missing_rows = []
+        rep_rows = []
+        ts_rows = []
+    
+        if not extracted_root.exists():
+            print(f"ERROR: extracted_root no existe: {extracted_root}")
+            return
+    
+        controllers = sorted([p for p in extracted_root.iterdir() if p.is_dir()])
+        if not controllers:
+            print("WARNING: no se encontraron controladores en extracted_root.")
+            return
+    
+        for ctrl_dir in controllers:
+            controller = ctrl_dir.name
+            loads = sorted([p for p in ctrl_dir.iterdir() if p.is_dir()], key=lambda p: natural_load_key(p.name))
+    
+            for load_dir in loads:
+                load = load_dir.name
+                # busca todos los csv de contenedores (por rep)
+                csvs = list(load_dir.glob(glob_pat))
+                if not csvs:
                     missing_rows.append({
-                        "controller": controller, "load": load, "rep": rep,
-                        "container": container, "path": str(csv_path), "reason": f"read_error:{e}"
+                        "controller": controller, "load": load, "rep": None,
+                        "container": None, "path": str(load_dir), "reason": "no_csvs_found"
                     })
                     continue
-
-                if df_raw.empty:
-                    missing_rows.append({
-                        "controller": controller, "load": load, "rep": rep,
-                        "container": container, "path": str(csv_path), "reason": "empty_csv"
-                    })
-                    continue
-
-                # resumen por rep (post-warmup)
-                metrics_out, meta, df_res = compute_rep_summary(
-                    df_raw=df_raw,
-                    resample_s=resample_s,
-                    warmup_cfg=warmup_cfg,
-                    metrics_cfg=metrics_cfg,
-                    required_cols=required_cols,
-                )
-                if "error" in meta:
-                    missing_rows.append({
-                        "controller": controller, "load": load, "rep": rep,
-                        "container": container, "path": str(csv_path), "reason": meta["error"]
-                    })
-                    continue
-
-                row = {
-                    "controller": controller,
-                    "load": load,
-                    "rep": rep,
-                    "container": container,
-                    "src_csv": str(csv_path),
-                    **meta,
-                    **metrics_out,
-                }
-                rep_rows.append(row)
-
-                # series de tiempo por rep (incluye warmup)
-                df_ts = build_timeseries_metrics(df_res, resample_s=resample_s, metrics_cfg=metrics_cfg)
-                if not df_ts.empty:
-                    for _, r in df_ts.iterrows():
-                        ts_rows.append({
-                            "controller": controller,
-                            "load": load,
-                            "rep": rep,
-                            "container": container,
-                            "t_rel_s": int(r["t_rel_s"]),
-                            **{k: r.get(k, None) for k in df_ts.columns if k != "t_rel_s"},
+    
+                for csv_path in sorted(csvs):
+                    # parse rep_?
+                    mrep = re.search(r"(rep_\d+)", str(csv_path))
+                    rep = mrep.group(1) if mrep else "rep_unknown"
+                    container = csv_path.stem
+    
+                    if container_filter and container not in container_filter:
+                        continue
+    
+                    try:
+                        df_raw = pd.read_csv(csv_path)
+                    except Exception as e:
+                        missing_rows.append({
+                            "controller": controller, "load": load, "rep": rep,
+                            "container": container, "path": str(csv_path), "reason": f"read_error:{e}"
                         })
-
-    rep_df = pd.DataFrame(rep_rows)
-    miss_df = pd.DataFrame(missing_rows)
-    ts_rep_df = pd.DataFrame(ts_rows)
-
-    rep_df.to_csv(rep_summary_path, index=False)
-    miss_df.to_csv(missing_path, index=False)
-
-    # ----------------- load_summary (agrega sobre reps) -----------------
-    conf = cfg.get("stats", {}).get("confidence", {})
-    ci_enable = bool(conf.get("enable", True))
-    ci_level = float(conf.get("level", 0.95))
-    ci_method = conf.get("method", "t")
-
-    metric_names = list(metrics_cfg.keys())
-
-    load_rows = []
-    if not rep_df.empty:
-        grp = rep_df.groupby(["controller", "load", "container"], dropna=False)
-        for (controller, load, container), g in grp:
-            out = {"controller": controller, "load": load, "container": container}
-            for m in metric_names:
-                v = pd.to_numeric(g[m], errors="coerce").dropna()
-                n = int(v.shape[0])
-                mean = float(v.mean()) if n else None
-                std = float(v.std(ddof=1)) if n >= 2 else None
-
-                out[f"{m}_mean"] = mean
-                out[f"{m}_std"] = std
-                out[f"{m}_min"] = float(v.min()) if n else None
-                out[f"{m}_max"] = float(v.max()) if n else None
-                out[f"{m}_count"] = n
-
-                if ci_enable and (n >= 2) and (mean is not None) and (std is not None):
-                    lo, hi = compute_ci(mean, std, n, ci_level, ci_method)
-                    out[f"{m}_ci95_low"] = lo
-                    out[f"{m}_ci95_high"] = hi
-                else:
-                    out[f"{m}_ci95_low"] = None
-                    out[f"{m}_ci95_high"] = None
-            load_rows.append(out)
-
-    load_df = pd.DataFrame(load_rows)
-    if not load_df.empty:
-        # orden por carga
-        load_df["__load_key"] = load_df["load"].apply(natural_load_key)
-        load_df = load_df.sort_values(["controller", "__load_key", "container"]).drop(columns=["__load_key"])
-    load_df.to_csv(load_summary_path, index=False)
-
-    # ----------------- timeseries_mean (agrega sobre reps por t) -----------------
-    ts_rows_out = []
-    if not ts_rep_df.empty:
-        # agrega por controller/load/container/t_rel_s
-        g2 = ts_rep_df.groupby(["controller", "load", "container", "t_rel_s"], dropna=False)
-        for keys, g in g2:
-            controller, load, container, t_rel_s = keys
-            out = {"controller": controller, "load": load, "container": container, "t_rel_s": int(t_rel_s)}
-            for m in metric_names:
-                if m not in g.columns:
-                    continue
-                v = pd.to_numeric(g[m], errors="coerce").dropna()
-                n = int(v.shape[0])
-                mean = float(v.mean()) if n else None
-                std = float(v.std(ddof=1)) if n >= 2 else None
-
-                out[f"{m}_mean"] = mean
-                out[f"{m}_std"] = std
-                out[f"{m}_count"] = n
-
-                if ci_enable and (n >= 2) and (mean is not None) and (std is not None):
-                    lo, hi = compute_ci(mean, std, n, ci_level, ci_method)
-                    out[f"{m}_ci95_low"] = lo
-                    out[f"{m}_ci95_high"] = hi
-                else:
-                    out[f"{m}_ci95_low"] = None
-                    out[f"{m}_ci95_high"] = None
-
-            ts_rows_out.append(out)
-
-    ts_mean_df = pd.DataFrame(ts_rows_out)
-    if not ts_mean_df.empty:
-        ts_mean_df["__load_key"] = ts_mean_df["load"].apply(natural_load_key)
-        ts_mean_df = ts_mean_df.sort_values(["controller", "__load_key", "container", "t_rel_s"]).drop(columns=["__load_key"])
-    ts_mean_df.to_csv(timeseries_path, index=False)
-
-    print(f"OK: {rep_summary_path}")
-    print(f"OK: {load_summary_path}")
-    print(f"OK: {timeseries_path}")
-    print(f"OK: {missing_path}")
-
+                        continue
+    
+                    if df_raw.empty:
+                        missing_rows.append({
+                            "controller": controller, "load": load, "rep": rep,
+                            "container": container, "path": str(csv_path), "reason": "empty_csv"
+                        })
+                        continue
+    
+                    # resumen por rep (post-warmup)
+                    metrics_out, meta, df_res = compute_rep_summary(
+                        df_raw=df_raw,
+                        resample_s=resample_s,
+                        warmup_cfg=warmup_cfg,
+                        metrics_cfg=metrics_cfg,
+                        required_cols=required_cols,
+                    )
+                    if "error" in meta:
+                        missing_rows.append({
+                            "controller": controller, "load": load, "rep": rep,
+                            "container": container, "path": str(csv_path), "reason": meta["error"]
+                        })
+                        continue
+    
+                    row = {
+                        "controller": controller,
+                        "load": load,
+                        "rep": rep,
+                        "container": container,
+                        "src_csv": str(csv_path),
+                        **meta,
+                        **metrics_out,
+                    }
+                    rep_rows.append(row)
+    
+                    # series de tiempo por rep (incluye warmup)
+                    df_ts = build_timeseries_metrics(df_res, resample_s=resample_s, metrics_cfg=metrics_cfg)
+                    if not df_ts.empty:
+                        for _, r in df_ts.iterrows():
+                            ts_rows.append({
+                                "controller": controller,
+                                "load": load,
+                                "rep": rep,
+                                "container": container,
+                                "t_rel_s": int(r["t_rel_s"]),
+                                **{k: r.get(k, None) for k in df_ts.columns if k != "t_rel_s"},
+                            })
+    
+        rep_df = pd.DataFrame(rep_rows)
+        miss_df = pd.DataFrame(missing_rows)
+        ts_rep_df = pd.DataFrame(ts_rows)
+    
+        rep_df.to_csv(rep_summary_path, index=False)
+        miss_df.to_csv(missing_path, index=False)
+    
+        # ----------------- load_summary (agrega sobre reps) -----------------
+        conf = cfg.get("stats", {}).get("confidence", {})
+        ci_enable = bool(conf.get("enable", True))
+        ci_level = float(conf.get("level", 0.95))
+        ci_method = conf.get("method", "t")
+    
+        metric_names = list(metrics_cfg.keys())
+    
+        load_rows = []
+        if not rep_df.empty:
+            grp = rep_df.groupby(["controller", "load", "container"], dropna=False)
+            for (controller, load, container), g in grp:
+                out = {"controller": controller, "load": load, "container": container}
+                for m in metric_names:
+                    v = pd.to_numeric(g[m], errors="coerce").dropna()
+                    n = int(v.shape[0])
+                    mean = float(v.mean()) if n else None
+                    std = float(v.std(ddof=1)) if n >= 2 else None
+    
+                    out[f"{m}_mean"] = mean
+                    out[f"{m}_std"] = std
+                    out[f"{m}_min"] = float(v.min()) if n else None
+                    out[f"{m}_max"] = float(v.max()) if n else None
+                    out[f"{m}_count"] = n
+    
+                    if ci_enable and (n >= 2) and (mean is not None) and (std is not None):
+                        lo, hi = compute_ci(mean, std, n, ci_level, ci_method)
+                        out[f"{m}_ci95_low"] = lo
+                        out[f"{m}_ci95_high"] = hi
+                    else:
+                        out[f"{m}_ci95_low"] = None
+                        out[f"{m}_ci95_high"] = None
+                load_rows.append(out)
+    
+        load_df = pd.DataFrame(load_rows)
+        if not load_df.empty:
+            # orden por carga
+            load_df["__load_key"] = load_df["load"].apply(natural_load_key)
+            load_df = load_df.sort_values(["controller", "__load_key", "container"]).drop(columns=["__load_key"])
+        load_df.to_csv(load_summary_path, index=False)
+    
+        # ----------------- timeseries_mean (agrega sobre reps por t) -----------------
+        ts_rows_out = []
+        if not ts_rep_df.empty:
+            # agrega por controller/load/container/t_rel_s
+            g2 = ts_rep_df.groupby(["controller", "load", "container", "t_rel_s"], dropna=False)
+            for keys, g in g2:
+                controller, load, container, t_rel_s = keys
+                out = {"controller": controller, "load": load, "container": container, "t_rel_s": int(t_rel_s)}
+                for m in metric_names:
+                    if m not in g.columns:
+                        continue
+                    v = pd.to_numeric(g[m], errors="coerce").dropna()
+                    n = int(v.shape[0])
+                    mean = float(v.mean()) if n else None
+                    std = float(v.std(ddof=1)) if n >= 2 else None
+    
+                    out[f"{m}_mean"] = mean
+                    out[f"{m}_std"] = std
+                    out[f"{m}_count"] = n
+    
+                    if ci_enable and (n >= 2) and (mean is not None) and (std is not None):
+                        lo, hi = compute_ci(mean, std, n, ci_level, ci_method)
+                        out[f"{m}_ci95_low"] = lo
+                        out[f"{m}_ci95_high"] = hi
+                    else:
+                        out[f"{m}_ci95_low"] = None
+                        out[f"{m}_ci95_high"] = None
+    
+                ts_rows_out.append(out)
+    
+        ts_mean_df = pd.DataFrame(ts_rows_out)
+        if not ts_mean_df.empty:
+            ts_mean_df["__load_key"] = ts_mean_df["load"].apply(natural_load_key)
+            ts_mean_df = ts_mean_df.sort_values(["controller", "__load_key", "container", "t_rel_s"]).drop(columns=["__load_key"])
+        ts_mean_df.to_csv(timeseries_path, index=False)
+    
+        print(f"OK: {rep_summary_path}")
+        print(f"OK: {load_summary_path}")
+        print(f"OK: {timeseries_path}")
+        print(f"OK: {missing_path}")
+    
     # ----------------- Plots -----------------
     plots_cfg = cfg.get("plots", {})
     if plots_cfg.get("bar_by_load", {}).get("enable", False) and not load_df.empty:

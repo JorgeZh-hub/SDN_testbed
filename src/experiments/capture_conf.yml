@@ -61,13 +61,6 @@ flows:
     src_port: 5683
     extra_filter: "coap.mid"
 
-  - name: "http_vod_get"
-    link: "srvVoD0-cliVoD1"
-    protocol: "tcp"
-    transport: "tcp"
-    src_port: 80
-    extra_filter: ""
-
   - name: "rtp_iptv_send"
     link: "emIpTV0-srvIpTV0"
     protocol: "udp"
@@ -117,27 +110,27 @@ containers:
 
 links:
   # --- Core / Núcleo (bypass alto, atajos por S6 más bajos) ---
-  - link1: "switch1-eth1, switch2-eth1, 90"
-  - link2: "switch1-eth2, switch10-eth2, 90"
+  - link1: "switch1-eth1, switch2-eth1, 80"
+  - link2: "switch1-eth2, switch10-eth2, 80"
   - link3: "switch1-eth3, switch3-eth1, 150" # acceso IoT/VoIP sin cuello en S1-S3
 
   - link4: "switch2-eth2, switch6-eth2, 60" # ATAJO (se congestiona primero)
   - link5: "switch2-eth4, switch14-eth1, 300" # uplink a S14 (contenido) NO cuello
-  - link6: "switch2-eth3, switch4-eth1, 90"
+  - link6: "switch2-eth3, switch4-eth1, 80"
 
   - link7: "switch6-eth1, switch10-eth1, 60" # ATAJO
-  - link8: "switch4-eth2, switch5-eth1, 90"
+  - link8: "switch4-eth2, switch5-eth1, 80"
   - link9: "switch5-eth2, switch6-eth3, 60" # ATAJO
-  - link10: "switch5-eth3, switch7-eth1, 90"
+  - link10: "switch5-eth3, switch7-eth1, 80"
   - link11: "switch5-eth4, switch16-eth1, 150" # acceso S16 no cuello
   - link12: "switch7-eth2, switch17-eth1, 250" # acceso S17 no cuello
 
   - link13: "switch6-eth4, switch9-eth1, 60" # ATAJO (clave para hot-links)
-  - link14: "switch7-eth3, switch9-eth2, 90"
-  - link15: "switch8-eth1, switch9-eth3, 90"
-  - link16: "switch8-eth2, switch10-eth3, 90"
+  - link14: "switch7-eth3, switch9-eth2, 80"
+  - link15: "switch8-eth1, switch9-eth3, 80"
+  - link16: "switch8-eth2, switch10-eth3, 80"
 
-  - link17: "switch10-eth4, switch11-eth1, 200"
+  - link17: "switch10-eth4, switch11-eth1, 300"
   - link18: "switch9-eth4, switch12-eth1, 250" # uplink a S12 NO cuello
   - link19: "switch8-eth3, switch13-eth1, 250" # uplink a S13 NO cuello
   - link20: "switch4-eth3, switch15-eth1, 150" # acceso S15 no cuello

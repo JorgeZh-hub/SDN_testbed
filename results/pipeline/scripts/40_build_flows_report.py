@@ -19,6 +19,14 @@ import matplotlib.pyplot as plt
 def safe_mkdir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
 
+def read_csv_maybe_empty(path: Path) -> pd.DataFrame:
+    if not path.exists() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
+
 def natural_load_key(s: str):
     m = re.match(r"^\s*([0-9]+(?:\.[0-9]+)?)", str(s))
     if m:
@@ -428,6 +436,7 @@ def plot_timeseries_multi(ts_df: pd.DataFrame, out_path: Path, metric: str, min_
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/reports_flows.yml")
+    ap.add_argument("--regenerate-csvs", action="store_true", help="Recalcula y reescribe CSVs aunque ya existan.")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text())
@@ -436,6 +445,7 @@ def main():
     flows_glob = cfg["inputs"]["flows_glob"]
     flow_filter = cfg["inputs"].get("flow_filter", []) or []
     group_by = cfg["inputs"].get("group_by", ["flow"])
+    thr_unit = cfg["units"].get("throughput", "Mbps")
 
     out_dir = Path(cfg["outputs"]["out_dir"]).resolve()
     plots_dir = Path(cfg["outputs"]["plots_dir"]).resolve()
@@ -451,259 +461,220 @@ def main():
     p_ts_proto = out_dir / cfg["outputs"]["csv"]["ts_throughput_protocol"]
     p_missing = out_dir / cfg["outputs"]["csv"]["missing"]
 
-    missing = []
-    rep_flow_rows = []
-    rep_proto_acc = {}  # key=(controller,load,rep,protocol)->acc dict
-
-    # timeseries collectors (por rep)
-    ts_flow_rows = []   # controller, load, rep, id(flow), t_rel_s, throughput_Mbps
-    ts_proto_rows_raw = []  # controller, load, rep, protocol, t_sec, throughput_bytes
-
-    if not extracted_root.exists():
-        print(f"ERROR: extracted_root no existe: {extracted_root}")
-        return
-
-    controllers = sorted([p for p in extracted_root.iterdir() if p.is_dir()])
-    for ctrl_dir in controllers:
-        controller = ctrl_dir.name
-        loads = sorted([p for p in ctrl_dir.iterdir() if p.is_dir()], key=lambda p: natural_load_key(p.name))
-
-        for load_dir in loads:
-            load = load_dir.name
-            csvs = list(load_dir.glob(flows_glob))
-            if not csvs:
-                missing.append({"controller": controller, "load": load, "rep": None, "file": None, "reason": "no_flow_csvs"})
-                continue
-
-            for csv_path in sorted(csvs):
-                rep_m = re.search(r"(rep_\d+)", str(csv_path))
-                rep = rep_m.group(1) if rep_m else "rep_unknown"
-                flow_id = csv_path.stem
-
-                if flow_filter and flow_id not in flow_filter:
+    required_csvs = [
+        p_rep_flow, p_rep_proto, p_load_flow, p_load_proto,
+        p_ts_flow, p_ts_proto,
+    ]
+    use_existing_csvs = (not args.regenerate_csvs and all(p.exists() for p in required_csvs))
+    if use_existing_csvs:
+        print("INFO: usando CSVs existentes (usa --regenerate-csvs para regenerarlos).")
+        rep_flow_df = read_csv_maybe_empty(p_rep_flow)
+        rep_proto_df = read_csv_maybe_empty(p_rep_proto)
+        load_flow_df = read_csv_maybe_empty(p_load_flow)
+        load_proto_df = read_csv_maybe_empty(p_load_proto)
+        ts_flow_mean_df = read_csv_maybe_empty(p_ts_flow)
+        ts_proto_mean_df = read_csv_maybe_empty(p_ts_proto)
+        miss_df = read_csv_maybe_empty(p_missing)
+    else:
+        missing = []
+        rep_flow_rows = []
+        rep_proto_acc = {}  # key=(controller,load,rep,protocol)->acc dict
+    
+        # timeseries collectors (por rep)
+        ts_flow_rows = []   # controller, load, rep, id(flow), t_rel_s, throughput_Mbps
+        ts_proto_rows_raw = []  # controller, load, rep, protocol, t_sec, throughput_bytes
+    
+        if not extracted_root.exists():
+            print(f"ERROR: extracted_root no existe: {extracted_root}")
+            return
+    
+        controllers = sorted([p for p in extracted_root.iterdir() if p.is_dir()])
+        for ctrl_dir in controllers:
+            controller = ctrl_dir.name
+            loads = sorted([p for p in ctrl_dir.iterdir() if p.is_dir()], key=lambda p: natural_load_key(p.name))
+    
+            for load_dir in loads:
+                load = load_dir.name
+                csvs = list(load_dir.glob(flows_glob))
+                if not csvs:
+                    missing.append({"controller": controller, "load": load, "rep": None, "file": None, "reason": "no_flow_csvs"})
                     continue
-
-                try:
-                    df_raw = read_flow_csv(csv_path)
-                except Exception as e:
-                    missing.append({"controller": controller, "load": load, "rep": rep, "file": str(csv_path), "reason": f"read_error:{e}"})
-                    continue
-
-                if df_raw.empty:
-                    missing.append({"controller": controller, "load": load, "rep": rep, "file": str(csv_path), "reason": "empty_csv"})
-                    continue
-
-                flow_sum, proto_accum, df_ts_flow, df_ts_proto_rows = compute_file_rep_summaries(df_raw, cfg, flow_id_fallback=flow_id)
-                if not flow_sum:
-                    missing.append({"controller": controller, "load": load, "rep": rep, "file": str(csv_path), "reason": "no_valid_rows"})
-                    continue
-
-                rep_flow_rows.append({
+    
+                for csv_path in sorted(csvs):
+                    rep_m = re.search(r"(rep_\d+)", str(csv_path))
+                    rep = rep_m.group(1) if rep_m else "rep_unknown"
+                    flow_id = csv_path.stem
+    
+                    if flow_filter and flow_id not in flow_filter:
+                        continue
+    
+                    try:
+                        df_raw = read_flow_csv(csv_path)
+                    except Exception as e:
+                        missing.append({"controller": controller, "load": load, "rep": rep, "file": str(csv_path), "reason": f"read_error:{e}"})
+                        continue
+    
+                    if df_raw.empty:
+                        missing.append({"controller": controller, "load": load, "rep": rep, "file": str(csv_path), "reason": "empty_csv"})
+                        continue
+    
+                    flow_sum, proto_accum, df_ts_flow, df_ts_proto_rows = compute_file_rep_summaries(df_raw, cfg, flow_id_fallback=flow_id)
+                    if not flow_sum:
+                        missing.append({"controller": controller, "load": load, "rep": rep, "file": str(csv_path), "reason": "no_valid_rows"})
+                        continue
+    
+                    rep_flow_rows.append({
+                        "controller": controller,
+                        "load": load,
+                        "rep": rep,
+                        **flow_sum,
+                        "src_csv": str(csv_path),
+                    })
+    
+                    # acumula protocolo (para resumen por protocolo en este rep)
+                    if "protocol" in group_by:
+                        key = (controller, load, rep, proto_accum["protocol"])
+                        cur = rep_proto_acc.get(key)
+                        if cur is None:
+                            rep_proto_acc[key] = dict(proto_accum)
+                        else:
+                            cur["delay_weight_sum_s"] += proto_accum["delay_weight_sum_s"]
+                            cur["delay_count_sum"] += proto_accum["delay_count_sum"]
+                            cur["jitter_weight_sum_s"] += proto_accum["jitter_weight_sum_s"]
+                            cur["jitter_count_sum"] += proto_accum["jitter_count_sum"]
+                            cur["throughput_total_bytes"] += proto_accum["throughput_total_bytes"]
+                            cur["lost_total_pkts"] += proto_accum["lost_total_pkts"]
+                            cur["sent_total_pkts"] += proto_accum["sent_total_pkts"]
+    
+                            # min/max t_sec
+                            for k in ["t_sec_min", "t_sec_max"]:
+                                if proto_accum[k] is None:
+                                    continue
+                                if cur[k] is None:
+                                    cur[k] = proto_accum[k]
+                                else:
+                                    cur[k] = min(cur[k], proto_accum[k]) if k.endswith("min") else max(cur[k], proto_accum[k])
+    
+                    # timeseries throughput flow
+                    if "flow" in group_by and not df_ts_flow.empty:
+                        # reindex missing seconds
+                        fill = cfg["timeseries"].get("fill_missing_seconds", "zero")
+                        tmax = int(df_ts_flow["t_rel_s"].max())
+                        grid = pd.DataFrame({"t_rel_s": range(0, tmax + 1)})
+                        m = grid.merge(df_ts_flow, on="t_rel_s", how="left")
+                        if fill == "zero":
+                            m["throughput_Mbps"] = m["throughput_Mbps"].fillna(0.0)
+                        # si nan, se queda NaN
+                        for _, r in m.iterrows():
+                            ts_flow_rows.append({
+                                "controller": controller,
+                                "load": load,
+                                "rep": rep,
+                                "id": flow_sum["id"],
+                                "t_rel_s": int(r["t_rel_s"]),
+                                "throughput_Mbps": r["throughput_Mbps"],
+                            })
+    
+                    # timeseries raw proto rows (para luego sumar por segundo)
+                    if "protocol" in group_by and not df_ts_proto_rows.empty:
+                        df_ts_proto_rows["controller"] = controller
+                        df_ts_proto_rows["load"] = load
+                        df_ts_proto_rows["rep"] = rep
+                        ts_proto_rows_raw.append(df_ts_proto_rows)
+    
+        # ---- DataFrames ----
+        rep_flow_df = pd.DataFrame(rep_flow_rows)
+        miss_df = pd.DataFrame(missing)
+    
+        # protocolo rep summary
+        rep_proto_rows = []
+        if rep_proto_acc:
+            thr_unit = cfg["units"].get("throughput", "Mbps")
+            thr_factor = unit_throughput_factor(thr_unit)
+    
+            for (controller, load, rep, proto), a in rep_proto_acc.items():
+                delay_ms = (a["delay_weight_sum_s"] / a["delay_count_sum"] * 1000.0) if a["delay_count_sum"] > 0 else None
+                jitter_ms = (a["jitter_weight_sum_s"] / a["jitter_count_sum"] * 1000.0) if a["jitter_count_sum"] > 0 else None
+    
+                # throughput promedio por protocolo (bytes totales / wall_duration global)
+                if a["t_sec_min"] is not None and a["t_sec_max"] is not None:
+                    wall_s = max(1, int(a["t_sec_max"] - a["t_sec_min"] + 1))
+                else:
+                    wall_s = 1
+                thr_mean = (a["throughput_total_bytes"] / wall_s) * thr_factor
+    
+                loss_pct = (100.0 * a["lost_total_pkts"] / a["sent_total_pkts"]) if a["sent_total_pkts"] > 0 else None
+    
+                rep_proto_rows.append({
                     "controller": controller,
                     "load": load,
                     "rep": rep,
-                    **flow_sum,
-                    "src_csv": str(csv_path),
+                    "id": proto,
+                    "protocol": proto,
+                    "delay_mean_ms": delay_ms,
+                    "jitter_mean_ms": jitter_ms,
+                    f"throughput_total_mean_{thr_unit}": thr_mean,
+                    "throughput_total_bytes": a["throughput_total_bytes"],
+                    "lost_total_pkts": a["lost_total_pkts"],
+                    "sent_total_pkts": a["sent_total_pkts"],
+                    "loss_pct": loss_pct,
+                    "wall_s": wall_s,
                 })
-
-                # acumula protocolo (para resumen por protocolo en este rep)
-                if "protocol" in group_by:
-                    key = (controller, load, rep, proto_accum["protocol"])
-                    cur = rep_proto_acc.get(key)
-                    if cur is None:
-                        rep_proto_acc[key] = dict(proto_accum)
+    
+        rep_proto_df = pd.DataFrame(rep_proto_rows)
+    
+        # ---- Agregación por carga (sobre reps) ----
+        conf = cfg.get("stats", {}).get("confidence", {})
+        ci_enable = bool(conf.get("enable", True))
+        ci_level = float(conf.get("level", 0.95))
+        ci_method = conf.get("method", "t")
+    
+        def agg_load(df_rep: pd.DataFrame, metric_cols: List[str]) -> pd.DataFrame:
+            out = []
+            if df_rep.empty:
+                return pd.DataFrame()
+    
+            grp = df_rep.groupby(["controller", "load", "id"], dropna=False)
+            for (controller, load, idv), g in grp:
+                row = {"controller": controller, "load": load, "id": idv}
+                for mc in metric_cols:
+                    v = pd.to_numeric(g[mc], errors="coerce").dropna()
+                    n = int(v.shape[0])
+                    mean = float(v.mean()) if n else None
+                    std = float(v.std(ddof=1)) if n >= 2 else None
+                    row[f"{mc}_mean"] = mean
+                    row[f"{mc}_std"] = std
+                    row[f"{mc}_count"] = n
+                    if ci_enable and n >= 2 and mean is not None and std is not None:
+                        lo, hi = compute_ci(mean, std, n, ci_level, ci_method)
+                        row[f"{mc}_ci95_low"] = lo
+                        row[f"{mc}_ci95_high"] = hi
                     else:
-                        cur["delay_weight_sum_s"] += proto_accum["delay_weight_sum_s"]
-                        cur["delay_count_sum"] += proto_accum["delay_count_sum"]
-                        cur["jitter_weight_sum_s"] += proto_accum["jitter_weight_sum_s"]
-                        cur["jitter_count_sum"] += proto_accum["jitter_count_sum"]
-                        cur["throughput_total_bytes"] += proto_accum["throughput_total_bytes"]
-                        cur["lost_total_pkts"] += proto_accum["lost_total_pkts"]
-                        cur["sent_total_pkts"] += proto_accum["sent_total_pkts"]
-
-                        # min/max t_sec
-                        for k in ["t_sec_min", "t_sec_max"]:
-                            if proto_accum[k] is None:
-                                continue
-                            if cur[k] is None:
-                                cur[k] = proto_accum[k]
-                            else:
-                                cur[k] = min(cur[k], proto_accum[k]) if k.endswith("min") else max(cur[k], proto_accum[k])
-
-                # timeseries throughput flow
-                if "flow" in group_by and not df_ts_flow.empty:
-                    # reindex missing seconds
-                    fill = cfg["timeseries"].get("fill_missing_seconds", "zero")
-                    tmax = int(df_ts_flow["t_rel_s"].max())
-                    grid = pd.DataFrame({"t_rel_s": range(0, tmax + 1)})
-                    m = grid.merge(df_ts_flow, on="t_rel_s", how="left")
-                    if fill == "zero":
-                        m["throughput_Mbps"] = m["throughput_Mbps"].fillna(0.0)
-                    # si nan, se queda NaN
-                    for _, r in m.iterrows():
-                        ts_flow_rows.append({
-                            "controller": controller,
-                            "load": load,
-                            "rep": rep,
-                            "id": flow_sum["id"],
-                            "t_rel_s": int(r["t_rel_s"]),
-                            "throughput_Mbps": r["throughput_Mbps"],
-                        })
-
-                # timeseries raw proto rows (para luego sumar por segundo)
-                if "protocol" in group_by and not df_ts_proto_rows.empty:
-                    df_ts_proto_rows["controller"] = controller
-                    df_ts_proto_rows["load"] = load
-                    df_ts_proto_rows["rep"] = rep
-                    ts_proto_rows_raw.append(df_ts_proto_rows)
-
-    # ---- DataFrames ----
-    rep_flow_df = pd.DataFrame(rep_flow_rows)
-    miss_df = pd.DataFrame(missing)
-
-    # protocolo rep summary
-    rep_proto_rows = []
-    if rep_proto_acc:
+                        row[f"{mc}_ci95_low"] = None
+                        row[f"{mc}_ci95_high"] = None
+                out.append(row)
+    
+            df_out = pd.DataFrame(out)
+            df_out["__k"] = df_out["load"].apply(natural_load_key)
+            df_out = df_out.sort_values(["id", "controller", "__k"]).drop(columns=["__k"])
+            return df_out
+    
+        # métricas estándar en rep_flow
         thr_unit = cfg["units"].get("throughput", "Mbps")
-        thr_factor = unit_throughput_factor(thr_unit)
-
-        for (controller, load, rep, proto), a in rep_proto_acc.items():
-            delay_ms = (a["delay_weight_sum_s"] / a["delay_count_sum"] * 1000.0) if a["delay_count_sum"] > 0 else None
-            jitter_ms = (a["jitter_weight_sum_s"] / a["jitter_count_sum"] * 1000.0) if a["jitter_count_sum"] > 0 else None
-
-            # throughput promedio por protocolo (bytes totales / wall_duration global)
-            if a["t_sec_min"] is not None and a["t_sec_max"] is not None:
-                wall_s = max(1, int(a["t_sec_max"] - a["t_sec_min"] + 1))
-            else:
-                wall_s = 1
-            thr_mean = (a["throughput_total_bytes"] / wall_s) * thr_factor
-
-            loss_pct = (100.0 * a["lost_total_pkts"] / a["sent_total_pkts"]) if a["sent_total_pkts"] > 0 else None
-
-            rep_proto_rows.append({
-                "controller": controller,
-                "load": load,
-                "rep": rep,
-                "id": proto,
-                "protocol": proto,
-                "delay_mean_ms": delay_ms,
-                "jitter_mean_ms": jitter_ms,
-                f"throughput_total_mean_{thr_unit}": thr_mean,
-                "throughput_total_bytes": a["throughput_total_bytes"],
-                "lost_total_pkts": a["lost_total_pkts"],
-                "sent_total_pkts": a["sent_total_pkts"],
-                "loss_pct": loss_pct,
-                "wall_s": wall_s,
-            })
-
-    rep_proto_df = pd.DataFrame(rep_proto_rows)
-
-    # ---- Agregación por carga (sobre reps) ----
-    conf = cfg.get("stats", {}).get("confidence", {})
-    ci_enable = bool(conf.get("enable", True))
-    ci_level = float(conf.get("level", 0.95))
-    ci_method = conf.get("method", "t")
-
-    def agg_load(df_rep: pd.DataFrame, metric_cols: List[str]) -> pd.DataFrame:
-        out = []
-        if df_rep.empty:
-            return pd.DataFrame()
-
-        grp = df_rep.groupby(["controller", "load", "id"], dropna=False)
-        for (controller, load, idv), g in grp:
-            row = {"controller": controller, "load": load, "id": idv}
-            for mc in metric_cols:
-                v = pd.to_numeric(g[mc], errors="coerce").dropna()
-                n = int(v.shape[0])
-                mean = float(v.mean()) if n else None
-                std = float(v.std(ddof=1)) if n >= 2 else None
-                row[f"{mc}_mean"] = mean
-                row[f"{mc}_std"] = std
-                row[f"{mc}_count"] = n
-                if ci_enable and n >= 2 and mean is not None and std is not None:
-                    lo, hi = compute_ci(mean, std, n, ci_level, ci_method)
-                    row[f"{mc}_ci95_low"] = lo
-                    row[f"{mc}_ci95_high"] = hi
-                else:
-                    row[f"{mc}_ci95_low"] = None
-                    row[f"{mc}_ci95_high"] = None
-            out.append(row)
-
-        df_out = pd.DataFrame(out)
-        df_out["__k"] = df_out["load"].apply(natural_load_key)
-        df_out = df_out.sort_values(["id", "controller", "__k"]).drop(columns=["__k"])
-        return df_out
-
-    # métricas estándar en rep_flow
-    thr_unit = cfg["units"].get("throughput", "Mbps")
-    thr_col = f"throughput_total_mean_{thr_unit}"
-
-
-    flow_metric_cols = ["delay_mean_ms", "jitter_mean_ms", thr_col, "loss_pct"]
-    proto_metric_cols = ["delay_mean_ms", "jitter_mean_ms", thr_col, "loss_pct"]
-
-    load_flow_df = agg_load(rep_flow_df, flow_metric_cols) if not rep_flow_df.empty else pd.DataFrame()
-    load_proto_df = agg_load(rep_proto_df, proto_metric_cols) if not rep_proto_df.empty else pd.DataFrame()
-
-    # ---- Timeseries throughput (flow) promedio sobre reps ----
-    ts_flow_rep_df = pd.DataFrame(ts_flow_rows)
-    ts_flow_out_rows = []
-    if not ts_flow_rep_df.empty:
-        g = ts_flow_rep_df.groupby(["controller", "load", "id", "t_rel_s"], dropna=False)
-        for (controller, load, idv, t), gg in g:
-            v = pd.to_numeric(gg["throughput_Mbps"], errors="coerce").dropna()
-            n = int(v.shape[0])
-            mean = float(v.mean()) if n else None
-            std = float(v.std(ddof=1)) if n >= 2 else None
-            row = {"controller": controller, "load": load, "id": idv, "t_rel_s": int(t)}
-            row["throughput_Mbps_mean"] = mean
-            row["throughput_Mbps_std"] = std
-            row["throughput_Mbps_count"] = n
-            if ci_enable and n >= 2 and mean is not None and std is not None:
-                lo, hi = compute_ci(mean, std, n, ci_level, ci_method)
-                row["throughput_Mbps_ci95_low"] = lo
-                row["throughput_Mbps_ci95_high"] = hi
-            else:
-                row["throughput_Mbps_ci95_low"] = None
-                row["throughput_Mbps_ci95_high"] = None
-            ts_flow_out_rows.append(row)
-
-    ts_flow_mean_df = pd.DataFrame(ts_flow_out_rows)
-    if not ts_flow_mean_df.empty:
-        ts_flow_mean_df["__k"] = ts_flow_mean_df["load"].apply(natural_load_key)
-        ts_flow_mean_df = ts_flow_mean_df.sort_values(["id", "controller", "__k", "t_rel_s"]).drop(columns=["__k"])
-
-    # ---- Timeseries throughput (protocol) ----
-    ts_proto_mean_df = pd.DataFrame()
-    if "protocol" in group_by and ts_proto_rows_raw:
-        raw = pd.concat(ts_proto_rows_raw, ignore_index=True)
-        raw["t_sec"] = to_num(raw["t_sec"])
-        raw["throughput_bytes"] = to_num(raw["throughput_bytes"]).fillna(0)
-        # suma por segundo por protocolo en cada rep
-        rows = []
-        for (controller, load, rep, proto), gg in raw.groupby(["controller", "load", "rep", "protocol"], dropna=False):
-            gg = gg.dropna(subset=["t_sec"]).sort_values("t_sec")
-            if gg.empty:
-                continue
-            t0 = float(gg["t_sec"].iloc[0])
-            gg["t_rel_s"] = (gg["t_sec"] - t0).astype(int)
-            per_s = gg.groupby("t_rel_s", as_index=False)["throughput_bytes"].sum()
-            per_s["throughput_Mbps"] = per_s["throughput_bytes"] * unit_throughput_factor("Mbps")
-            tmax = int(per_s["t_rel_s"].max())
-            grid = pd.DataFrame({"t_rel_s": range(0, tmax + 1)})
-            m = grid.merge(per_s[["t_rel_s", "throughput_Mbps"]], on="t_rel_s", how="left")
-            if cfg["timeseries"].get("fill_missing_seconds", "zero") == "zero":
-                m["throughput_Mbps"] = m["throughput_Mbps"].fillna(0.0)
-            for _, r in m.iterrows():
-                rows.append({
-                    "controller": controller, "load": load, "rep": rep, "id": str(proto),
-                    "t_rel_s": int(r["t_rel_s"]), "throughput_Mbps": r["throughput_Mbps"]
-                })
-
-        rep_ts = pd.DataFrame(rows)
-        out = []
-        if not rep_ts.empty:
-            g = rep_ts.groupby(["controller", "load", "id", "t_rel_s"], dropna=False)
+        thr_col = f"throughput_total_mean_{thr_unit}"
+    
+    
+        flow_metric_cols = ["delay_mean_ms", "jitter_mean_ms", thr_col, "loss_pct"]
+        proto_metric_cols = ["delay_mean_ms", "jitter_mean_ms", thr_col, "loss_pct"]
+    
+        load_flow_df = agg_load(rep_flow_df, flow_metric_cols) if not rep_flow_df.empty else pd.DataFrame()
+        load_proto_df = agg_load(rep_proto_df, proto_metric_cols) if not rep_proto_df.empty else pd.DataFrame()
+    
+        # ---- Timeseries throughput (flow) promedio sobre reps ----
+        ts_flow_rep_df = pd.DataFrame(ts_flow_rows)
+        ts_flow_out_rows = []
+        if not ts_flow_rep_df.empty:
+            g = ts_flow_rep_df.groupby(["controller", "load", "id", "t_rel_s"], dropna=False)
             for (controller, load, idv, t), gg in g:
                 v = pd.to_numeric(gg["throughput_Mbps"], errors="coerce").dropna()
                 n = int(v.shape[0])
@@ -720,30 +691,84 @@ def main():
                 else:
                     row["throughput_Mbps_ci95_low"] = None
                     row["throughput_Mbps_ci95_high"] = None
-                out.append(row)
-
-        ts_proto_mean_df = pd.DataFrame(out)
-        if not ts_proto_mean_df.empty:
-            ts_proto_mean_df["__k"] = ts_proto_mean_df["load"].apply(natural_load_key)
-            ts_proto_mean_df = ts_proto_mean_df.sort_values(["id", "controller", "__k", "t_rel_s"]).drop(columns=["__k"])
-
-    # ---- Save CSVs ----
-    rep_flow_df.to_csv(p_rep_flow, index=False)
-    rep_proto_df.to_csv(p_rep_proto, index=False)
-    load_flow_df.to_csv(p_load_flow, index=False)
-    load_proto_df.to_csv(p_load_proto, index=False)
-    ts_flow_mean_df.to_csv(p_ts_flow, index=False)
-    ts_proto_mean_df.to_csv(p_ts_proto, index=False)
-    miss_df.to_csv(p_missing, index=False)
-
-    print(f"OK: {p_rep_flow}")
-    print(f"OK: {p_rep_proto}")
-    print(f"OK: {p_load_flow}")
-    print(f"OK: {p_load_proto}")
-    print(f"OK: {p_ts_flow}")
-    print(f"OK: {p_ts_proto}")
-    print(f"OK: {p_missing}")
-
+                ts_flow_out_rows.append(row)
+    
+        ts_flow_mean_df = pd.DataFrame(ts_flow_out_rows)
+        if not ts_flow_mean_df.empty:
+            ts_flow_mean_df["__k"] = ts_flow_mean_df["load"].apply(natural_load_key)
+            ts_flow_mean_df = ts_flow_mean_df.sort_values(["id", "controller", "__k", "t_rel_s"]).drop(columns=["__k"])
+    
+        # ---- Timeseries throughput (protocol) ----
+        ts_proto_mean_df = pd.DataFrame()
+        if "protocol" in group_by and ts_proto_rows_raw:
+            raw = pd.concat(ts_proto_rows_raw, ignore_index=True)
+            raw["t_sec"] = to_num(raw["t_sec"])
+            raw["throughput_bytes"] = to_num(raw["throughput_bytes"]).fillna(0)
+            # suma por segundo por protocolo en cada rep
+            rows = []
+            for (controller, load, rep, proto), gg in raw.groupby(["controller", "load", "rep", "protocol"], dropna=False):
+                gg = gg.dropna(subset=["t_sec"]).sort_values("t_sec")
+                if gg.empty:
+                    continue
+                t0 = float(gg["t_sec"].iloc[0])
+                gg["t_rel_s"] = (gg["t_sec"] - t0).astype(int)
+                per_s = gg.groupby("t_rel_s", as_index=False)["throughput_bytes"].sum()
+                per_s["throughput_Mbps"] = per_s["throughput_bytes"] * unit_throughput_factor("Mbps")
+                tmax = int(per_s["t_rel_s"].max())
+                grid = pd.DataFrame({"t_rel_s": range(0, tmax + 1)})
+                m = grid.merge(per_s[["t_rel_s", "throughput_Mbps"]], on="t_rel_s", how="left")
+                if cfg["timeseries"].get("fill_missing_seconds", "zero") == "zero":
+                    m["throughput_Mbps"] = m["throughput_Mbps"].fillna(0.0)
+                for _, r in m.iterrows():
+                    rows.append({
+                        "controller": controller, "load": load, "rep": rep, "id": str(proto),
+                        "t_rel_s": int(r["t_rel_s"]), "throughput_Mbps": r["throughput_Mbps"]
+                    })
+    
+            rep_ts = pd.DataFrame(rows)
+            out = []
+            if not rep_ts.empty:
+                g = rep_ts.groupby(["controller", "load", "id", "t_rel_s"], dropna=False)
+                for (controller, load, idv, t), gg in g:
+                    v = pd.to_numeric(gg["throughput_Mbps"], errors="coerce").dropna()
+                    n = int(v.shape[0])
+                    mean = float(v.mean()) if n else None
+                    std = float(v.std(ddof=1)) if n >= 2 else None
+                    row = {"controller": controller, "load": load, "id": idv, "t_rel_s": int(t)}
+                    row["throughput_Mbps_mean"] = mean
+                    row["throughput_Mbps_std"] = std
+                    row["throughput_Mbps_count"] = n
+                    if ci_enable and n >= 2 and mean is not None and std is not None:
+                        lo, hi = compute_ci(mean, std, n, ci_level, ci_method)
+                        row["throughput_Mbps_ci95_low"] = lo
+                        row["throughput_Mbps_ci95_high"] = hi
+                    else:
+                        row["throughput_Mbps_ci95_low"] = None
+                        row["throughput_Mbps_ci95_high"] = None
+                    out.append(row)
+    
+            ts_proto_mean_df = pd.DataFrame(out)
+            if not ts_proto_mean_df.empty:
+                ts_proto_mean_df["__k"] = ts_proto_mean_df["load"].apply(natural_load_key)
+                ts_proto_mean_df = ts_proto_mean_df.sort_values(["id", "controller", "__k", "t_rel_s"]).drop(columns=["__k"])
+    
+        # ---- Save CSVs ----
+        rep_flow_df.to_csv(p_rep_flow, index=False)
+        rep_proto_df.to_csv(p_rep_proto, index=False)
+        load_flow_df.to_csv(p_load_flow, index=False)
+        load_proto_df.to_csv(p_load_proto, index=False)
+        ts_flow_mean_df.to_csv(p_ts_flow, index=False)
+        ts_proto_mean_df.to_csv(p_ts_proto, index=False)
+        miss_df.to_csv(p_missing, index=False)
+    
+        print(f"OK: {p_rep_flow}")
+        print(f"OK: {p_rep_proto}")
+        print(f"OK: {p_load_flow}")
+        print(f"OK: {p_load_proto}")
+        print(f"OK: {p_ts_flow}")
+        print(f"OK: {p_ts_proto}")
+        print(f"OK: {p_missing}")
+    
     # ---- Plots ----
     plots = cfg.get("plots", {})
 

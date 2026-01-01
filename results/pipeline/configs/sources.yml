@@ -3,8 +3,8 @@ drive:
   remote: "UIC_2025:"
 
 paths:
-  raw_root: "data/raw"
-  extracted_root: "data/extracted"
+  raw_root: "data_top1/raw"
+  extracted_root: "data_top1/extracted"
 
 defaults:
   zip_glob: "*.zip"
@@ -14,10 +14,4 @@ defaults:
 
 scenarios:
   - name: "Baseline"
-    drive_path: "UIC_backup/capturas/test_newTop_noTE" # dentro de Drive
-  - name: "Baseline V2"
-    drive_path: "UIC_backup/capturas/test_newTop_noTE2" # dentro de Drive
-  - name: "TE"
-    drive_path: "UIC_backup/capturas/test_newTop_TE" # dentro de Drive
-  - name: "TE QOS"
-    drive_path: "UIC_backup/capturas/test_newTop_TE_QOS" # dentro de Drive
+    drive_path: "UIC_backup/captures_new_top/test1_Baseline" # dentro de Drive

@@ -3,7 +3,8 @@ data/
 
 # resultados/pipeline
 results/*
-!results/pipeline/
+!results/pipeline/configs
+!results/pipeline/scripts
 
 # Python
 __pycache__/

@@ -1,7 +1,7 @@
 report: containers
 
 inputs:
-  extracted_root: "data/extracted"
+  extracted_root: "data_top1/extracted"
   containers_glob: "rep_*/reports/containers/*.csv"
   container_filter: ["ryu-ctrl"] # [] = todos
   required_columns:
@@ -61,13 +61,13 @@ metrics:
     unit: "KiB/s"
 
 outputs:
-  out_dir: "data/processed/containers"
+  out_dir: "data_top1/processed/containers"
   csv:
     rep_summary: "rep_summary.csv"
     load_summary: "load_summary.csv"
     timeseries_mean: "timeseries_mean.csv"
     missing: "missing_files.csv"
-  plots_dir: "data/processed/containers/plots"
+  plots_dir: "data_top1/processed/containers/plots"
 
 plots:
   bar_by_load:
