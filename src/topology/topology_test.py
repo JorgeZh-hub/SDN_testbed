@@ -32,15 +32,16 @@ def run_cmd(cmd):
         raise RuntimeError(f"cmd failed rc={p.returncode}\ncmd={' '.join(cmd)}\nstdout={p.stdout}\nstderr={p.stderr}")
     return p
 
-def ovs_apply_qos_linux_htb(port_name: str, cap_mbps: float, crit_ratio: float):
+def ovs_apply_qos_linux_htb(port_name: str, cap_mbps: float, crit_ratio: float, q_limit: int = 20):
     wait_for_port(port_name, timeout_s=5.0)
     cap_bps = int(cap_mbps * 1_000_000)
     crit_bps = int(cap_mbps * crit_ratio * 1_000_000)
 
-    # limpia qos previo
+    # 1. Limpia QoS previo
     run_cmd(["sudo", "ovs-vsctl", "--if-exists", "clear", "Port", port_name, "qos"])
 
-    # crea QoS + queues y asocia al puerto
+    # 2. Crea QoS + Queues en OVS (Tu código original)
+    # Nota: OVS mapea queues:0 -> Clase 1:1 y queues:1 -> Clase 1:2 (típicamente)
     run_cmd([
         "sudo", "ovs-vsctl",
         "--", "set", "Port", port_name, "qos=@qos",
@@ -50,9 +51,37 @@ def ovs_apply_qos_linux_htb(port_name: str, cap_mbps: float, crit_ratio: float):
         "queues:0=@q0",
         "queues:1=@q1",
         "--", "--id=@q0", "create", "Queue",
-        f"other-config:max-rate={cap_bps}",
+        f"other-config:max-rate={cap_bps}",  # Cola Default (Best Effort)
         "--", "--id=@q1", "create", "Queue",
-        f"other-config:min-rate={crit_bps}",
+        f"other-config:min-rate={crit_bps}", # Cola Crítica
+    ])
+
+    # ---------------------------------------------------------
+    # 3. EL TRUCO: Modificar el tamaño de la cola manualmente con tc
+    # ---------------------------------------------------------
+    # OVS crea una jerarquía HTB.
+    # La Queue 0 de OVS suele mapearse a la clase minor 1 (1:1)
+    # La Queue 1 de OVS suele mapearse a la clase minor 2 (1:2)
+    
+    # Forzamos una qdisc tipo 'pfifo' (First-In First-Out) con limite exacto
+    # a las clases hijas que acaba de crear OVS.
+    
+    # Ajustar Cola 0 (Default)
+    run_cmd([
+        "sudo", "tc", "qdisc", "add", 
+        "dev", port_name, 
+        "parent", "1:1", 
+        "handle", "10:", 
+        "pfifo", "limit", str(q_limit)
+    ])
+
+    # Ajustar Cola 1 (Crítica) - Opcional
+    run_cmd([
+        "sudo", "tc", "qdisc", "add", 
+        "dev", port_name, 
+        "parent", "1:2", 
+        "handle", "20:", 
+        "pfifo", "limit", str(q_limit)
     ])
 
 
@@ -164,6 +193,7 @@ try:
             node1, node2,
             cls=TCLink,
             bw=bw,
+            max_queue_size=30,
             intfName1=left,
             intfName2=right,
         )
