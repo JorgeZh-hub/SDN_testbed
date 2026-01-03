@@ -3,16 +3,16 @@
 # =============================================================================
 
 qos: # Configuración de colas y clases de QoS
-  default_queue: 3
+  default_queue: 0
   class_queues:
-    HI-REL: 0
-    LOW-LAT: 1
-    HI-THRU: 2
-    BEST-EFF: 3
+    HI-REL: 3
+    LOW-LAT: 2
+    HI-THRU: 1
+    BEST-EFF: 0
 
 te:
-  protect_queues: [0, 1] # No mover tráfico de estas colas
-  lower_queue_is_higher_priority: true
+  protect_queues: [3, 2] # No mover tráfico de estas colas
+  lower_queue_is_higher_priority: false
   unknown_queue_behavior: "protect"
   managed_classes: ["HI-THRU", "BEST-EFF"] # Clases que pueden ser movidas
 
@@ -23,7 +23,7 @@ classifiers:
   # MQTT (TCP 1883/8883)
   - name: "IOT_MQTT"
     class: "HI-REL"
-    queue: 0
+    queue: 3
     priority: 100
     stable_l4: true
     match:
@@ -33,7 +33,7 @@ classifiers:
   # HTTP sensores médicos
   - name: "IOT_HTTP_MED"
     class: "HI-REL"
-    queue: 0
+    queue: 3
     priority: 90
     stable_l4: true
     match:
@@ -45,7 +45,7 @@ classifiers:
   # WebSocket industrial
   - name: "IOT_WBS_INDUSTRIAL"
     class: "HI-REL"
-    queue: 0
+    queue: 3
     priority: 89
     stable_l4: true
     match:
@@ -57,7 +57,7 @@ classifiers:
   # CoAP
   - name: "IOT_COAP"
     class: "HI-REL"
-    queue: 0
+    queue: 3
     priority: 85
     stable_l4: true
     match:
@@ -69,7 +69,7 @@ classifiers:
   # AMQP
   - name: "IOT_AMQP"
     class: "HI-REL"
-    queue: 0
+    queue: 3
     priority: 84
     stable_l4: true
     match:
@@ -84,7 +84,7 @@ classifiers:
   # RTP VoIP (UDP)
   - name: "REALTIME_RTP_VOIP"
     class: "LOW-LAT"
-    queue: 1
+    queue: 2
     priority: 70
     stable_l4: false
     match:
@@ -95,7 +95,7 @@ classifiers:
   # RTP VideoLlamada (UDP)
   - name: "REALTIME_RTP_VIDEOCALL"
     class: "LOW-LAT"
-    queue: 1
+    queue: 2
     priority: 69
     stable_l4: false
     match:
@@ -109,7 +109,7 @@ classifiers:
   # IPTV RTSP (TCP)
   - name: "STREAM_RTSP"
     class: "HI-THRU"
-    queue: 2
+    queue: 1
     priority: 50
     stable_l4: true
     match:
@@ -121,7 +121,7 @@ classifiers:
   # IPTV HLS (HTTP) — para evitar chocar con VOD HTTP, idealmente amárralo por IPs
   - name: "STREAM_HLS_IPTV"
     class: "HI-THRU"
-    queue: 2
+    queue: 1
     priority: 49
     stable_l4: true
     match:
@@ -133,7 +133,7 @@ classifiers:
   # VOD
   - name: "VOD_HTTP"
     class: "HI-THRU"
-    queue: 2
+    queue: 1
     priority: 40
     stable_l4: true
     match:
@@ -147,6 +147,6 @@ classifiers:
   # ===========================================================================
   - name: "default"
     class: "BEST-EFF"
-    queue: 3
+    queue: 0
     priority: 0
     match: {}
