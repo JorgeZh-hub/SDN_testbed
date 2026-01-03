@@ -1,83 +1,152 @@
+# =============================================================================
+# te_conf.yml (QoS + TE genérico por clases/colas)
+# =============================================================================
+
+qos: # Configuración de colas y clases de QoS
+  default_queue: 3
+  class_queues:
+    HI-REL: 0
+    LOW-LAT: 1
+    HI-THRU: 2
+    BEST-EFF: 3
+
+te:
+  protect_queues: [0, 1] # No mover tráfico de estas colas
+  lower_queue_is_higher_priority: true
+  unknown_queue_behavior: "protect"
+  managed_classes: ["HI-THRU", "BEST-EFF"] # Clases que pueden ser movidas
+
 classifiers:
-  # ===================== MQTT (TCP 1883/8883) =====================
-  - name: "MQTT"
-    class: "CRIT"
+  # ===========================================================================
+  # 1) IoT CONSTANTE / CONTROL / TELEMETRÍA  => HI-REL (queue 0)
+  # ===========================================================================
+  # MQTT (TCP 1883/8883)
+  - name: "IOT_MQTT"
+    class: "HI-REL"
+    queue: 0
     priority: 100
+    stable_l4: true
     match:
       ip_proto: "tcp"
       l4_any_ports: [1883, 8883]
-      #src_subnets: ["192.51.100.29/32", "203.0.113.6/32"]
-      #dst_subnets: ["192.51.100.29/32", "203.0.113.6/32"]
 
-  #- name: "MQTT_cliMqtt2_192.51.100.29__brkMqtt0_203.0.113.1"
-  #  class: "CRIT"
-  #  priority: 99
-  #  match:
-  #    ip_proto: "tcp"
-  #    l4_any_ports: [1883, 8883]
-  #    src_subnets: ["192.51.100.29/32", "203.0.113.1/32"]
-  #    dst_subnets: ["192.51.100.29/32", "203.0.113.1/32"]
-
-  #- name: "MQTT_brkMqtt0_203.0.113.1__cliMqtt0_203.0.113.17"
-  #  class: "CRIT"
-  #  priority: 98
-  #  match:
-  #    ip_proto: "tcp"
-  #    l4_any_ports: [1883, 8883]
-  #    src_subnets: ["203.0.113.1/32", "203.0.113.17/32"]
-  #    dst_subnets: ["203.0.113.1/32", "203.0.113.17/32"]
-
-  #- name: "MQTT_cliMqtt1_192.51.100.28__brkMqtt1_203.0.113.6"
-  #  class: "CRIT"
-  #  priority: 97
-  #  match:
-  #    ip_proto: "tcp"
-  #    l4_any_ports: [1883, 8883]
-  #    src_subnets: ["192.51.100.28/32", "203.0.113.6/32"]
-  #    dst_subnets: ["192.51.100.28/32", "203.0.113.6/32"]
-
-  # ===================== HTTP (TCP 80) =====================
-  - name: "HTTP_IoT"
-    class: "CRIT"
-    priority: 80
+  # HTTP sensores médicos
+  - name: "IOT_HTTP_MED"
+    class: "HI-REL"
+    queue: 0
+    priority: 90
+    stable_l4: true
     match:
       ip_proto: "tcp"
       l4_any_ports: [5000]
       src_subnets: ["198.51.100.15/32", "203.0.113.10/32"]
       dst_subnets: ["198.51.100.15/32", "203.0.113.10/32"]
 
-  # ===================== WebSocket (TCP 8080) =====================
-  - name: "WBS"
-    class: "CRIT"
-    priority: 79
+  # WebSocket industrial
+  - name: "IOT_WBS_INDUSTRIAL"
+    class: "HI-REL"
+    queue: 0
+    priority: 89
+    stable_l4: true
     match:
       ip_proto: "tcp"
-      l4_any_ports: [8080]
+      l4_any_ports: [8080] # ajusta si usas otro
       src_subnets: ["198.51.100.15/32", "203.0.113.15/32"]
       dst_subnets: ["198.51.100.15/32", "203.0.113.15/32"]
 
-  # ===================== CoAP (UDP 5683/5684) =====================
-  - name: "COAP"
-    class: "CRIT"
-    priority: 70
+  # CoAP
+  - name: "IOT_COAP"
+    class: "HI-REL"
+    queue: 0
+    priority: 85
+    stable_l4: true
     match:
       ip_proto: "udp"
       l4_any_ports: [5683, 5684]
-      src_subnets: ["198.51.100.13/32", "203.0.113.12/32", "198.51.100.14/32"]
-      dst_subnets: ["198.51.100.13/32", "203.0.113.12/32", "198.51.100.14/32"]
+      src_subnets: ["198.51.100.13/32", "198.51.100.14/32", "203.0.113.12/32"]
+      dst_subnets: ["198.51.100.13/32", "198.51.100.14/32", "203.0.113.12/32"]
 
-  # ===================== AMQP (TCP 5672/5671) =====================
-  - name: "AMQP"
-    class: "CRIT"
-    priority: 60
+  # AMQP
+  - name: "IOT_AMQP"
+    class: "HI-REL"
+    queue: 0
+    priority: 84
+    stable_l4: true
     match:
       ip_proto: "tcp"
       l4_any_ports: [5672, 5671]
       src_subnets: ["198.51.100.15/32", "203.0.113.14/32"]
       dst_subnets: ["198.51.100.15/32", "203.0.113.14/32"]
 
-  # ===================== Default =====================
+  # ===========================================================================
+  # 2) TIEMPO REAL INTERACTIVO (VoIP / VideoLlamada) => LOW-LAT (queue 1)
+  # ===========================================================================
+  # RTP VoIP (UDP)
+  - name: "REALTIME_RTP_VOIP"
+    class: "LOW-LAT"
+    queue: 1
+    priority: 70
+    stable_l4: false
+    match:
+      ip_proto: "udp"
+      src_subnets: ["198.51.100.87/32", "203.0.113.80/32"]
+      dst_subnets: ["198.51.100.87/32", "203.0.113.80/32"]
+
+  # RTP VideoLlamada (UDP)
+  - name: "REALTIME_RTP_VIDEOCALL"
+    class: "LOW-LAT"
+    queue: 1
+    priority: 69
+    stable_l4: false
+    match:
+      ip_proto: "udp"
+      src_subnets: ["198.51.100.90/32", "203.0.113.86/32"]
+      dst_subnets: ["198.51.100.90/32", "203.0.113.86/32"]
+
+  # ===========================================================================
+  # 3) ALTO THROUGHPUT (IPTV / VOD / Streaming) => HI-THRU (queue 2)
+  # ===========================================================================
+  # IPTV RTSP (TCP)
+  - name: "STREAM_RTSP"
+    class: "HI-THRU"
+    queue: 2
+    priority: 50
+    stable_l4: true
+    match:
+      ip_proto: "tcp"
+      l4_any_ports: [8554, 8000]
+      src_subnets: ["198.51.100.80/32", "198.51.100.81/32", "203.0.113.84/32"]
+      dst_subnets: ["198.51.100.80/32", "198.51.100.81/32", "203.0.113.84/32"]
+
+  # IPTV HLS (HTTP) — para evitar chocar con VOD HTTP, idealmente amárralo por IPs
+  - name: "STREAM_HLS_IPTV"
+    class: "HI-THRU"
+    queue: 2
+    priority: 49
+    stable_l4: true
+    match:
+      ip_proto: "tcp"
+      l4_any_ports: [8888]
+      src_subnets: ["198.51.100.81/32", "203.0.113.84/32"]
+      dst_subnets: ["198.51.100.81/32", "203.0.113.84/32"]
+
+  # VOD
+  - name: "VOD_HTTP"
+    class: "HI-THRU"
+    queue: 2
+    priority: 40
+    stable_l4: true
+    match:
+      ip_proto: "tcp"
+      l4_any_ports: [80]
+      src_subnets: ["198.51.100.89/32", "203.0.113.85/32", "198.51.100.91/32"]
+      dst_subnets: ["198.51.100.89/32", "203.0.113.85/32", "198.51.100.91/32"]
+
+  # ===========================================================================
+  # 4) BEST EFFORT / BACKGROUND (FTP + UDP ruido) => BEST-EFF (queue 3)
+  # ===========================================================================
   - name: "default"
-    class: "BE"
+    class: "BEST-EFF"
+    queue: 3
     priority: 0
     match: {}

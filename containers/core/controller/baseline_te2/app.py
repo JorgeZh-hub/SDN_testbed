@@ -72,15 +72,50 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         top_path = CONF.top_config
         te_path = CONF.te_config
 
-        te_data = load_yaml(te_path) if te_path else {}
+        classifier_enable = bool(CONF.queues_enable or CONF.te_activate)
+        te_data = load_yaml(te_path) if (te_path and classifier_enable) else {}
         top_data = load_yaml(top_path) if top_path else {}
         csv_dir = os.path.dirname(top_path) if top_path else None
 
         self.log_topo = CONF.logger_topology_manager
 
         self.cap_db = parse_links_capacity(top_data)
-        self.classifier = PriorityClassifier.from_cfg(te_data)
+        self.classifier = PriorityClassifier.from_cfg(te_data) if classifier_enable else PriorityClassifier([])
 
+        # ---- QoS mapping (genérico) ----
+        qos_cfg = te_data.get("qos", {}) if isinstance(te_data, dict) else {}
+        if not isinstance(qos_cfg, dict):
+            qos_cfg = {}
+
+        class_to_queue = qos_cfg.get("class_queues", qos_cfg.get("class_to_queue", {}))
+        if not isinstance(class_to_queue, dict):
+            class_to_queue = {}
+        default_queue_id = qos_cfg.get("default_queue", None)
+        try:
+            default_queue_id = int(default_queue_id) if default_queue_id is not None else None
+        except Exception:
+            default_queue_id = None
+
+        # ---- TE: clases elegibles para reroute ----
+        te_cfg = te_data.get("te", {}) if isinstance(te_data, dict) else {}
+        if not isinstance(te_cfg, dict):
+            te_cfg = {}
+        managed_classes = te_cfg.get("managed_classes", None)
+        if not (isinstance(managed_classes, list) and managed_classes):
+            # fallback: si hay reglas con te: true, usar esas clases
+            mc = sorted({r.out_class for r in getattr(self.classifier, "rules", []) if getattr(r, "te", None) is True})
+            managed_classes = mc if mc else None
+
+
+        # ---- TE: prioridad por colas ----
+        protect_queues = te_cfg.get("protect_queues", None)
+        if protect_queues is not None and not isinstance(protect_queues, list):
+            protect_queues = None
+
+        lower_queue_is_higher_priority = te_cfg.get("lower_queue_is_higher_priority", True)
+        lower_queue_is_higher_priority = bool(lower_queue_is_higher_priority)
+
+        unknown_queue_behavior = te_cfg.get("unknown_queue_behavior", "protect")
         self.topo = TopologyManager(self.logger)
         self.flow_mgr = FlowManager(
             topo=self.topo,
@@ -89,6 +124,8 @@ class ReactiveIoTTE13(app_manager.RyuApp):
             priority_base=CONF.flow_priority,
             barrier=CONF.barrier,
             queues_enable=CONF.queues_enable,
+            class_to_queue=class_to_queue,
+            default_queue_id=default_queue_id,
             classifier=self.classifier,
             log_enabled=CONF.logger_flow_manager,
         )
@@ -123,6 +160,10 @@ class ReactiveIoTTE13(app_manager.RyuApp):
             safety_factor=CONF.safety_factor,
             r_min_mbps=CONF.r_min_mbps,
             table_id=0,
+            managed_classes=managed_classes,
+            protect_queues=protect_queues,
+            lower_queue_is_higher_priority=lower_queue_is_higher_priority,
+            unknown_queue_behavior=unknown_queue_behavior,
             log_enabled=CONF.logger_te,
         )
 
@@ -133,6 +174,20 @@ class ReactiveIoTTE13(app_manager.RyuApp):
             len(self.classifier.rules),
             len(self.cap_db.cap_by_portpair),
         )
+        if managed_classes is not None:
+            self.logger.info("[INIT] TE managed_classes=%s", sorted({str(x).strip().upper() for x in managed_classes}))
+        self.logger.info("[INIT] TE protect_queues=%s lower_queue_is_higher_priority=%s unknown_queue_behavior=%s",
+                         sorted({int(x) for x in (protect_queues or [])}) if protect_queues is not None else [0],
+                         lower_queue_is_higher_priority,
+                         unknown_queue_behavior)
+        if classifier_enable:
+            self.logger.info(
+                "[INIT] QoS policy_enabled=%s set_queue_actions=%s default_queue=%s class_queues=%s",
+                classifier_enable,
+                CONF.queues_enable,
+                default_queue_id if default_queue_id is not None else "-",
+                {str(k).strip().upper(): int(v) for k, v in class_to_queue.items()} if class_to_queue else "-",
+            )
         self.logger.info(
             "[INIT] periods te=%ss portstats=%ss flowstats=%ss app_id=0x%X prio=%d",
             CONF.te_period,

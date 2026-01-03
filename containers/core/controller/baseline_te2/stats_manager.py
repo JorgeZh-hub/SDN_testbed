@@ -240,32 +240,53 @@ class StatsManager:
             self._flow_csv_header_written = True
         for st in msg.body:
             cookie = int(st.cookie)
+            if self.flow_mgr.cookie_path.get(cookie, [0])[-1] != dpid:
+                continue  # only consider flows that end at this dp
             byte_count = int(getattr(st, "byte_count", 0))
             prev_b = self._prev_cookie_bytes[dpid].get(cookie, None)
             prev_t = self._prev_cookie_ts[dpid].get(cookie, None)
             if prev_b is None or prev_t is None:
                 self._prev_cookie_bytes[dpid][cookie] = byte_count
                 self._prev_cookie_ts[dpid][cookie] = ts
+                if self.log_enabled:
+                    self.log.info(
+                        "[STATS] flow_init dpid=%s cookie=%s bytes=%s ts=%.6f",
+                        dpid,
+                        hex(cookie),
+                        byte_count,
+                        ts,
+                    )
                 continue
             dt = max(1e-3, ts - prev_t)
+            if dt <= self.flowstats_period * 0.2:
+                continue  # too soon since last update
             delta = max(0, byte_count - prev_b)
             mbps = (delta * 8.0 / 1e6) / dt
 
             self._prev_cookie_bytes[dpid][cookie] = byte_count
             self._prev_cookie_ts[dpid][cookie] = ts
 
+            old_rate = self.flow_mgr.cookie_rate_mbps.get(cookie, 0.0)
+            ewma = self.alpha_flow * mbps + (1.0 - self.alpha_flow) * old_rate
+
             # feed FlowManager
             self.flow_mgr.update_cookie_rate(cookie, mbps, alpha=self.alpha_flow)
+            new_rate = self.flow_mgr.cookie_rate_mbps.get(cookie, 0.0)
             updated += 1
+            avg_mbps = None
+            rates_n = 0
+            stale_n = 0
             if csv_writer is not None:
                 self._cookie_rate_by_dp[cookie][dpid] = (mbps, ts)
                 stale = [
                     k for k, (_, t_last) in self._cookie_rate_by_dp[cookie].items()
                     if ts - t_last > (self.flowstats_period * 2.0)
                 ]
+                stale_n = len(stale)
                 for k in stale:
                     self._cookie_rate_by_dp[cookie].pop(k, None)
                 rates = [v for v, _ in self._cookie_rate_by_dp[cookie].values()]
+                rates_n = len(rates)
                 avg_mbps = (sum(rates) / len(rates)) if rates else 0.0
                 match_str = str(getattr(st, "match", "-"))
                 self._cookie_match[cookie] = match_str
@@ -278,11 +299,22 @@ class StatsManager:
             if self.log_enabled:
                 cls = self.flow_mgr.cookie_class.get(cookie, "-")
                 path = self.flow_mgr.cookie_path.get(cookie, [])
+                avg_mbps_str = f"{avg_mbps:.3f}" if avg_mbps is not None else "-"
                 self.log.info(
-                    "[STATS] flow cookie=%s class=%s mbps=%.3f path=%s",
+                    "[STATS] flow dpid=%s cookie=%s class=%s mbps=%.3f dt=%.3f deltaB=%s prevB=%s bytes=%s ewma=%.3f rate=%.3f avg_mbps=%s rates_n=%s stale=%s path=%s",
+                    dpid,
                     hex(cookie),
                     cls,
                     mbps,
+                    dt,
+                    delta,
+                    prev_b,
+                    byte_count,
+                    ewma,
+                    new_rate,
+                    avg_mbps_str,
+                    rates_n,
+                    stale_n,
                     path,
                 )
         if csv_file is not None:

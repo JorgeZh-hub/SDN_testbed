@@ -130,32 +130,58 @@ def build_key_fields(protocol, transport):
 
 def build_key(df, key_fields):
     """
-    Construye una clave hash a partir de los campos indicados para
+    Construye una clave hash rápida (uint64) a partir de los campos indicados para
     poder emparejar paquetes observados en distintos puntos.
+
+    Antes se usaba sha256 por fila (muy costoso); aquí usamos hashing vectorizado de pandas.
     """
     if df.empty:
-        return pd.Series(dtype=str)
+        return pd.Series(dtype="uint64")
 
     for field in key_fields:
         if field not in df.columns:
             df[field] = ""
 
-    concatenated = df[key_fields].astype(str).agg("|".join, axis=1)
-    return concatenated.apply(lambda x: hashlib.sha256(x.encode()).hexdigest())
+    key_df = df[key_fields].copy()
+    # Evita NaNs para que el hash sea consistente y más rápido
+    key_df = key_df.fillna("").astype("string")
+    return pd.util.hash_pandas_object(key_df, index=False)
 
 
-def run_tshark_to_csv(pcap_path, display_filter, fields, output_csv):
+def _tmp_base_dir():
     """
-    Ejecuta tshark para extraer sólo los campos necesarios a CSV.
+    Usa /dev/shm (tmpfs) si está disponible para que los temporales vivan en RAM.
     """
-    tshark_fields = ["frame.time_epoch"] + list(dict.fromkeys(fields + ["frame.len"]))
+    shm = Path("/dev/shm")
+    if shm.exists() and os.access(str(shm), os.W_OK):
+        return str(shm)
+    return None
+
+
+def _port_prefix(protocol, transport):
+    """
+    Replica la lógica de build_display_filter para saber qué prefijo de puertos se usa.
+    """
+    if protocol == "coap":
+        return "udp"
+    return transport
+
+
+def run_tshark_to_tsv(pcap_path, display_filter, fields, output_tsv):
+    """
+    Ejecuta tshark para extraer sólo los campos necesarios a TSV (más rápido de parsear que CSV con quotes).
+    - Usa '-n' para evitar resolución de nombres.
+    - Usa separador TAB y sin comillas.
+    """
+    tshark_fields = ["frame.time_epoch"] + list(dict.fromkeys(list(fields) + ["frame.len"]))
 
     cmd = [
-        "tshark", "-r", str(pcap_path),
+        "tshark", "-n",
+        "-r", str(pcap_path),
         "-T", "fields",
         "-E", "header=y",
-        "-E", "separator=,",
-        "-E", "quote=d",
+        "-E", "separator=\t",
+        "-E", "quote=n",
         "-E", "occurrence=f",
     ]
 
@@ -165,76 +191,115 @@ def run_tshark_to_csv(pcap_path, display_filter, fields, output_csv):
     for field in tshark_fields:
         cmd += ["-e", field]
 
-    with open(output_csv, "w") as fh:
+    with open(output_tsv, "w") as fh:
         subprocess.run(cmd, stdout=fh, check=True)
 
 
-def analyze_direction(flow, direction_info):
+def _read_tshark_tsv(path: Path) -> pd.DataFrame:
     """
-    Analiza una dirección (A->B o B->A) y devuelve métricas y DataFrames.
-    direction_info debe contener:
-      direction, pcap_src, pcap_dst, ip_src, ip_dst, src_port, dst_port, host_src, host_dst
+    Lee el TSV generado por tshark de forma rápida.
+    - na_filter=False: no escanea NaNs (más rápido) y deja vacíos como ''.
     """
-    name = flow["name"]
-    protocol = flow["protocol"]
-    transport = flow["transport"]
-    jitter_enabled = flow.get("jitter", False)
-    extra_filter = flow.get("extra_filter", "")
+    try:
+        df = pd.read_csv(
+            path,
+            sep="\t",
+            engine="c",
+            on_bad_lines="skip",
+            na_filter=False,
+        )
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
+
+    if df.empty:
+        return df
+
+    # Normaliza tipos para cálculos (tiempos/longitudes)
+    if "frame.time_epoch" in df.columns:
+        df["frame.time_epoch"] = pd.to_numeric(df["frame.time_epoch"], errors="coerce")
+        df = df.dropna(subset=["frame.time_epoch"]).copy()
+
+    if "frame.len" in df.columns:
+        df["frame.len"] = pd.to_numeric(df["frame.len"], errors="coerce").fillna(0).astype("int64")
+    else:
+        df["frame.len"] = 0
+
+    return df
+
+
+def _direction_mask(df: pd.DataFrame, protocol: str, transport: str,
+                    ip_src: str, ip_dst: str,
+                    src_port=None, dst_port=None) -> pd.Series:
+    """
+    Máscara para quedarnos sólo con paquetes de una dirección (ip/srcport -> ip/dstport).
+    """
+    if df.empty:
+        return pd.Series([], dtype=bool)
+
+    if "ip.src" not in df.columns or "ip.dst" not in df.columns:
+        return pd.Series([False] * len(df), index=df.index)
+
+    m = (df["ip.src"] == str(ip_src)) & (df["ip.dst"] == str(ip_dst))
+
+    pp = _port_prefix(protocol, transport)
+
+    if src_port is not None:
+        col = f"{pp}.srcport"
+        if col in df.columns:
+            m &= (df[col] == str(src_port))
+        else:
+            m &= False
+
+    if dst_port is not None:
+        col = f"{pp}.dstport"
+        if col in df.columns:
+            m &= (df[col] == str(dst_port))
+        else:
+            m &= False
+
+    return m
+
+
+def _compute_metrics_from_frames(flow, direction_label: str, df_a: pd.DataFrame, df_b: pd.DataFrame):
+    """
+    Calcula métricas a partir de dos DataFrames ya filtrados para una dirección:
+    df_a = captura lado origen, df_b = captura lado destino.
+    """
+    if df_a is None or df_b is None or df_a.empty or df_b.empty:
+        print(f"   ⚠️  {direction_label}: no se encontraron paquetes que cumplan el filtro.")
+        return None
+
     key_fields = flow["key_fields"]
+    jitter_enabled = flow.get("jitter", False)
 
-    display_filter = build_display_filter(
-        protocol,
-        transport,
-        direction_info["ip_src"],
-        direction_info["ip_dst"],
-        direction_info.get("src_port"),
-        direction_info.get("dst_port"),
-        extra_filter,
-    )
-
-    pcap_src = Path(direction_info["pcap_src"])
-    pcap_dst = Path(direction_info["pcap_dst"])
-
-    with tempfile.TemporaryDirectory(prefix=f"flow_{name}_{direction_info['direction']}_") as tmpdir:
-        tmp_a = Path(tmpdir) / "side_a.csv"
-        tmp_b = Path(tmpdir) / "side_b.csv"
-
-        run_tshark_to_csv(pcap_src, display_filter, key_fields, tmp_a)
-        run_tshark_to_csv(pcap_dst, display_filter, key_fields, tmp_b)
-
-        try:
-            df_a = pd.read_csv(tmp_a, on_bad_lines="skip", engine="python")
-            df_b = pd.read_csv(tmp_b, on_bad_lines="skip", engine="python")
-        except pd.errors.EmptyDataError:
-            print(f"   ⚠️  {direction_info['direction']}: sin datos en uno de los PCAP; se omite.")
-            return None
-
-        if df_a.empty or df_b.empty:
-            print(f"   ⚠️  {direction_info['direction']}: no se encontraron paquetes que cumplan el filtro.")
-            return None
-
+    # Normaliza nombres de tiempo
     df_a = df_a.rename(columns={"frame.time_epoch": "t_a"})
     df_b = df_b.rename(columns={"frame.time_epoch": "t_b"})
+
+    # Asegura tipos numéricos para orden/agrupación
+    df_a["t_a"] = pd.to_numeric(df_a["t_a"], errors="coerce")
+    df_b["t_b"] = pd.to_numeric(df_b["t_b"], errors="coerce")
+    df_a = df_a.dropna(subset=["t_a"]).copy()
+    df_b = df_b.dropna(subset=["t_b"]).copy()
+
+    if df_a.empty or df_b.empty:
+        print(f"   ⚠️  {direction_label}: sin timestamps válidos; se omite.")
+        return None
 
     df_a = df_a.sort_values("t_a").reset_index(drop=True)
     df_b = df_b.sort_values("t_b").reset_index(drop=True)
 
+    # Garantiza frame.len
     if "frame.len" not in df_a:
         df_a["frame.len"] = 0
     if "frame.len" not in df_b:
         df_b["frame.len"] = 0
 
-    # 1) construir hash de key
+    # 1) construir key (hash vectorizado)
     df_a["key"] = build_key(df_a, key_fields)
     df_b["key"] = build_key(df_b, key_fields)
 
-    if protocol == "rtp":
-        dups_a = df_a["key"].duplicated().any()
-        dups_b = df_b["key"].duplicated().any()
-        if dups_a or dups_b:
-            print(f"   ⚠️ {direction_info['direction']} RTP: hay claves hash duplicadas. A_dup={dups_a}, B_dup={dups_b}")
-
-    # 2) índice dentro de cada key (0,1,2,...)
+    # 2) enumerar repetidos por key
     df_a["idx"] = df_a.groupby("key").cumcount()
     df_b["idx"] = df_b.groupby("key").cumcount()
 
@@ -246,7 +311,7 @@ def analyze_direction(flow, direction_info):
     )
 
     if merged.empty:
-        print(f"   ⚠️  {direction_info['direction']}: no se encontraron pares coincidentes entre ambas capturas.")
+        print(f"   ⚠️  {direction_label}: no se encontraron pares coincidentes entre ambas capturas.")
         return None
 
     merged["delay"] = merged["t_b"] - merged["t_a"]
@@ -255,7 +320,7 @@ def analyze_direction(flow, direction_info):
     # Filtrar retardos negativos y outliers respecto a la media
     merged = merged[merged["delay"] >= 0].copy()
     if merged.empty:
-        print(f"   ⚠️  {direction_info['direction']}: todos los retardos fueron negativos; se omite.")
+        print(f"   ⚠️  {direction_label}: todos los retardos fueron negativos; se omite.")
         return None
 
     delay_mean = merged["delay"].mean()
@@ -264,70 +329,85 @@ def analyze_direction(flow, direction_info):
         delay_upper = delay_mean + OUTLIER_STD_FACTOR * delay_std
         merged = merged[merged["delay"] <= delay_upper].copy()
         if merged.empty:
-            print(f"   ⚠️  {direction_info['direction']}: todos los retardos se descartaron como outliers; se omite.")
+            print(f"   ⚠️  {direction_label}: todos los retardos se descartaron como outliers; se omite.")
             return None
 
-    jitter_stats = None
-    if jitter_enabled:
-        merged_sorted = merged.sort_values("t_a").reset_index(drop=True)
-        jitters = []
-        prev_j = 0.0
-        prev_delay = None
-        for d in merged_sorted["delay"]:
-            if prev_delay is None:
-                prev_delay = d
-                jitters.append(0.0)
-                continue
-            diff = abs(d - prev_delay)
-            prev_j = prev_j + (diff - prev_j) / 16.0
-            jitters.append(prev_j)
-            prev_delay = d
-        merged_sorted["jitter"] = jitters
-
-        # Filtrar jitters atípicos
-        jitter_mean = merged_sorted["jitter"].mean()
-        jitter_std = merged_sorted["jitter"].std()
-        if pd.notna(jitter_std) and jitter_std > 0:
-            jitter_upper = jitter_mean + OUTLIER_STD_FACTOR * jitter_std
-            merged_sorted = merged_sorted[merged_sorted["jitter"] <= jitter_upper].copy()
-
-        if not merged_sorted.empty:
-            jitter_stats = (
-                merged_sorted.groupby(merged_sorted["t_a"].astype(int))["jitter"]
-                .agg(["count", "mean", "std", "min", "max"])
-                .reset_index()
-                .rename(columns={"t_a": "t_sec"})
-            )
-
+    # Delay por segundo (media ponderada por conteo)
     delay_stats = (
         merged.groupby("t_sec")["delay"]
-              .agg(["count", "mean", "std", "min", "max"])
-              .reset_index()
+        .agg(["count", "mean", "min", "max", "sum"])
+        .reset_index()
+        .rename(columns={
+            "count": "delay_count",
+            "mean": "delay_mean",
+            "min": "delay_min",
+            "max": "delay_max",
+            "sum": "delay_sum",
+        })
     )
 
-    delay_stats.insert(0, "flow", name)
-    delay_stats["protocol"] = protocol
-    delay_stats["transport"] = transport
-    delay_stats["host_src"] = direction_info["host_src"]
-    delay_stats["host_dst"] = direction_info["host_dst"]
+    delay_count = int(delay_stats["delay_count"].sum())
+    delay_sum = float(delay_stats["delay_sum"].sum())
+    delay_min = float(delay_stats["delay_min"].min()) if not delay_stats.empty else 0.0
+    delay_max = float(delay_stats["delay_max"].max()) if not delay_stats.empty else 0.0
 
-    columns = [
-        "flow", "protocol", "transport", "host_src", "host_dst",
-        "t_sec", "count", "mean", "std", "min", "max"
-    ]
-    delay_stats = delay_stats[columns]
+    # ========= jitter (opcional) =========
+    jitter_stats = None
+    jitter_count = 0
+    jitter_sum = 0.0
+    jitter_max = 0.0
 
-    # Pérdidas por segundo
-    df_a_counts = df_a.assign(t_sec=df_a["t_a"].astype(int)).groupby("t_sec")["key"].count()
-    df_b_counts = df_b.assign(t_sec=df_b["t_b"].astype(int)).groupby("t_sec")["key"].count()
+    if jitter_enabled:
+        # Calcula jitter estilo RFC3550 (estimador exponencial)
+        merged_sorted = merged.sort_values("t_a").reset_index(drop=True)
+        delays = merged_sorted["delay"].tolist()
+        if len(delays) >= 2:
+            jitters = [0.0]
+            prev_j = 0.0
+            prev_delay = delays[0]
+            for d in delays[1:]:
+                diff = abs(d - prev_delay)
+                prev_j = prev_j + (diff - prev_j) / 16.0
+                jitters.append(prev_j)
+                prev_delay = d
+            merged_sorted["jitter"] = jitters
+
+            # Filtrar jitters atípicos
+            jitter_mean = merged_sorted["jitter"].mean()
+            jitter_std = merged_sorted["jitter"].std()
+            if pd.notna(jitter_std) and jitter_std > 0:
+                jitter_upper = jitter_mean + OUTLIER_STD_FACTOR * jitter_std
+                merged_sorted = merged_sorted[merged_sorted["jitter"] <= jitter_upper].copy()
+
+            if not merged_sorted.empty:
+                jitter_stats = (
+                    merged_sorted.groupby("t_sec")["jitter"]
+                    .agg(["count", "mean", "max", "sum"])
+                    .reset_index()
+                    .rename(columns={
+                        "count": "jitter_count",
+                        "mean": "jitter_mean",
+                        "max": "jitter_max",
+                        "sum": "jitter_sum",
+                    })
+                )
+                jitter_count = int(jitter_stats["jitter_count"].sum())
+                jitter_sum = float(jitter_stats["jitter_sum"].sum())
+                jitter_max = float(jitter_stats["jitter_max"].max()) if not jitter_stats.empty else 0.0
+
+    # ========= pérdida =========
+    # Conteos por segundo en cada lado (antes y después)
+    count_a = df_a.assign(t_sec=df_a["t_a"].astype(int)).groupby("t_sec").size().rename("count_a")
+    count_b = df_b.assign(t_sec=df_b["t_b"].astype(int)).groupby("t_sec").size().rename("count_b")
+
     loss_df = (
-        pd.concat([df_a_counts, df_b_counts], axis=1, keys=["count_a", "count_b"])
+        pd.concat([count_a, count_b], axis=1, keys=["count_a", "count_b"])
         .fillna(0)
     )
     loss_df["lost"] = loss_df["count_a"] - loss_df["count_b"]
     loss_df = loss_df.reset_index()
 
-    # Throughput en B por segundo (bytes)
+    # ========= throughput =========
     throughput = (
         df_b.assign(t_sec=df_b["t_b"].astype(int))
         .groupby("t_sec")["frame.len"]
@@ -341,30 +421,14 @@ def analyze_direction(flow, direction_info):
     result = result.merge(throughput, on="t_sec", how="left")
     if jitter_stats is not None:
         jitter_stats = jitter_stats.rename(columns={
-            "count": "jitter_count",
-            "mean": "jitter_mean",
-            "std": "jitter_std",
-            "min": "jitter_min",
-            "max": "jitter_max",
+            "jitter_count": "jitter_count",
+            "jitter_mean": "jitter_mean",
+            "jitter_max": "jitter_max",
+            "jitter_sum": "jitter_sum",
         })
         result = result.merge(jitter_stats, on="t_sec", how="left")
 
     result = result.fillna(0)
-    result["direction"] = direction_info["direction"]
-
-    # Acumulados para sumas globales
-    delay_count = delay_stats["count"].sum()
-    delay_sum = (delay_stats["mean"] * delay_stats["count"]).sum()
-    delay_min = delay_stats["min"].min()
-    delay_max = delay_stats["max"].max()
-
-    jitter_count = 0
-    jitter_sum = 0
-    jitter_max = 0
-    if jitter_stats is not None and not jitter_stats.empty:
-        jitter_count = jitter_stats["jitter_count"].sum()
-        jitter_sum = (jitter_stats["jitter_mean"] * jitter_stats["jitter_count"]).sum()
-        jitter_max = jitter_stats["jitter_max"].max()
 
     throughput_total = throughput["throughput_bytes"].sum()
     loss_total = loss_df["lost"].sum()
@@ -381,42 +445,115 @@ def analyze_direction(flow, direction_info):
         "jitter_count": jitter_count,
         "jitter_sum": jitter_sum,
         "jitter_max": jitter_max,
-        "direction": direction_info["direction"],
+        "direction": direction_label,
     }
+def analyze_direction(flow, direction_info):
+    """
+    Analiza una dirección (A->B o B->A) y devuelve métricas y DataFrames.
 
+    Mantiene la misma salida que antes, pero:
+      - usa TSV (más rápido de parsear),
+      - temporales en /dev/shm si está disponible.
+    """
+    protocol = flow["protocol"]
+    transport = flow["transport"]
+    extra_filter = flow.get("extra_filter", "")
+    key_fields = flow["key_fields"]
 
+    # Filtro direccional (tal cual versión anterior)
+    display_filter = build_display_filter(
+        protocol,
+        transport,
+        direction_info["ip_src"],
+        direction_info["ip_dst"],
+        direction_info.get("src_port"),
+        direction_info.get("dst_port"),
+        extra_filter,
+    )
+
+    # Asegura campos mínimos para poder separar/depurar
+    pp = _port_prefix(protocol, transport)
+    required = ["ip.src", "ip.dst", f"{pp}.srcport", f"{pp}.dstport"]
+    extract_fields = list(dict.fromkeys(list(key_fields) + required))
+
+    with tempfile.TemporaryDirectory(dir=_tmp_base_dir()) as tmpdir:
+        tmp_a = Path(tmpdir) / "side_a.tsv"
+        tmp_b = Path(tmpdir) / "side_b.tsv"
+
+        run_tshark_to_tsv(direction_info["pcap_src"], display_filter, extract_fields, tmp_a)
+        run_tshark_to_tsv(direction_info["pcap_dst"], display_filter, extract_fields, tmp_b)
+
+        df_a = _read_tshark_tsv(tmp_a)
+        df_b = _read_tshark_tsv(tmp_b)
+
+    return _compute_metrics_from_frames(flow, direction_info["direction"], df_a, df_b)
 def analyze_flow(flow, output_dir):
     name = flow["name"]
-    print(f"\n=== Analizando flujo: {name} (bidireccional) ===")
+    print(f"\n=== Analizando flujo: {name} (bidireccional optimizado) ===")
 
-    forward_info = {
-        "direction": "forward",
-        "pcap_src": flow["pcap_a"],
-        "pcap_dst": flow["pcap_b"],
-        "ip_src": flow["ip_src"],
-        "ip_dst": flow["ip_dst"],
-        "src_port": flow.get("src_port"),
-        "dst_port": flow.get("dst_port"),
-        "host_src": flow["host_src"],
-        "host_dst": flow["host_dst"],
-    }
-    reverse_info = {
-        "direction": "reverse",
-        "pcap_src": flow["pcap_b"],
-        "pcap_dst": flow["pcap_a"],
-        "ip_src": flow["ip_dst"],
-        "ip_dst": flow["ip_src"],
-        "src_port": flow.get("dst_port"),
-        "dst_port": flow.get("src_port"),
-        "host_src": flow["host_dst"],
-        "host_dst": flow["host_src"],
-    }
+    protocol = flow["protocol"]
+    transport = flow["transport"]
+    extra_filter = flow.get("extra_filter", "")
+    key_fields = flow["key_fields"]
+
+    # Construye filtro bidireccional: (A->B) || (B->A)
+    fwd_base = build_display_filter(
+        protocol, transport,
+        flow["ip_src"], flow["ip_dst"],
+        flow.get("src_port"), flow.get("dst_port"),
+        extra="",  # el extra se aplica al final (una sola vez)
+    )
+    rev_base = build_display_filter(
+        protocol, transport,
+        flow["ip_dst"], flow["ip_src"],
+        flow.get("dst_port"), flow.get("src_port"),
+        extra="",
+    )
+
+    display_filter = f"({fwd_base}) || ({rev_base})"
+    if extra_filter:
+        display_filter = f"({display_filter}) && ({extra_filter})"
+
+    # Extraer una sola vez por cada pcap
+    pp = _port_prefix(protocol, transport)
+    required = ["ip.src", "ip.dst", f"{pp}.srcport", f"{pp}.dstport"]
+    extract_fields = list(dict.fromkeys(list(key_fields) + required))
+
+    with tempfile.TemporaryDirectory(dir=_tmp_base_dir()) as tmpdir:
+        tmp_a = Path(tmpdir) / "side_a.tsv"
+        tmp_b = Path(tmpdir) / "side_b.tsv"
+
+        run_tshark_to_tsv(flow["pcap_a"], display_filter, extract_fields, tmp_a)
+        run_tshark_to_tsv(flow["pcap_b"], display_filter, extract_fields, tmp_b)
+
+        df_side_a = _read_tshark_tsv(tmp_a)
+        df_side_b = _read_tshark_tsv(tmp_b)
+
+    if df_side_a.empty or df_side_b.empty:
+        print("   ⚠️  Sin datos en uno de los PCAP (tras filtro bidireccional); se omite.")
+        return
+
+    # Separa direcciones en memoria (sin volver a correr tshark)
+    src_port = flow.get("src_port")
+    dst_port = flow.get("dst_port")
+
+    mask_fwd_a = _direction_mask(df_side_a, protocol, transport, flow["ip_src"], flow["ip_dst"], src_port, dst_port)
+    mask_fwd_b = _direction_mask(df_side_b, protocol, transport, flow["ip_src"], flow["ip_dst"], src_port, dst_port)
+
+    mask_rev_b = _direction_mask(df_side_b, protocol, transport, flow["ip_dst"], flow["ip_src"], dst_port, src_port)
+    mask_rev_a = _direction_mask(df_side_a, protocol, transport, flow["ip_dst"], flow["ip_src"], dst_port, src_port)
 
     metrics = []
-    for info in (forward_info, reverse_info):
-        direction_metrics = analyze_direction(flow, info)
-        if direction_metrics is not None:
-            metrics.append(direction_metrics)
+
+    # Forward: src=pcap_a, dst=pcap_b
+    fwd_metrics = _compute_metrics_from_frames(flow, "forward", df_side_a.loc[mask_fwd_a].copy(), df_side_b.loc[mask_fwd_b].copy())
+    if fwd_metrics is not None:
+        metrics.append(fwd_metrics)
+
+    # Reverse: src=pcap_b, dst=pcap_a
+    rev_metrics = _compute_metrics_from_frames(flow, "reverse", df_side_b.loc[mask_rev_b].copy(), df_side_a.loc[mask_rev_a].copy())
+    if rev_metrics is not None:
+        metrics.append(rev_metrics)
 
     if not metrics:
         print("   ⚠️  No se obtuvieron métricas en ningún sentido.")
@@ -431,57 +568,54 @@ def analyze_flow(flow, output_dir):
 
     agg_rows = []
     for t_sec, grp in combined_result.groupby("t_sec"):
-        row = {
-            "flow": name,
-            "protocol": flow["protocol"],
-            "transport": flow["transport"],
-            "endpoints": combined_result["endpoints"].iloc[0],
-            "t_sec": t_sec,
-        }
-        row["count"] = grp["count"].sum()
-        row["mean"] = weighted_avg(grp["mean"], grp["count"])
-        row["std"] = weighted_avg(grp["std"], grp["count"])
-        row["min"] = grp["min"].min()
-        row["max"] = grp["max"].max()
+        row = {"t_sec": t_sec}
+
+        # delay
+        row["delay_count"] = grp["delay_count"].sum()
+        row["delay_sum"] = grp["delay_sum"].sum()
+        row["delay_min"] = grp["delay_min"].min() if len(grp) else 0
+        row["delay_max"] = grp["delay_max"].max() if len(grp) else 0
+        row["delay_mean"] = (row["delay_sum"] / row["delay_count"]) if row["delay_count"] else 0
+
+        # jitter
+        if "jitter_count" in grp.columns:
+            row["jitter_count"] = grp["jitter_count"].sum()
+            row["jitter_sum"] = grp["jitter_sum"].sum() if "jitter_sum" in grp else 0
+            row["jitter_max"] = grp["jitter_max"].max() if "jitter_max" in grp else 0
+            row["jitter_mean"] = (row["jitter_sum"] / row["jitter_count"]) if row["jitter_count"] else 0
+
+        # loss + throughput
         row["count_a"] = grp["count_a"].sum() if "count_a" in grp else 0
         row["count_b"] = grp["count_b"].sum() if "count_b" in grp else 0
         row["lost"] = grp["lost"].sum() if "lost" in grp else 0
         row["throughput_bytes"] = grp["throughput_bytes"].sum() if "throughput_bytes" in grp else 0
-        if "jitter_count" in grp:
-            row["jitter_count"] = grp["jitter_count"].sum()
-            row["jitter_mean"] = weighted_avg(grp["jitter_mean"], grp["jitter_count"])
-            row["jitter_std"] = weighted_avg(grp["jitter_std"], grp["jitter_count"])
-            row["jitter_min"] = grp["jitter_min"].min()
-            row["jitter_max"] = grp["jitter_max"].max()
+
+        row["endpoints"] = grp["endpoints"].iloc[0]
         agg_rows.append(row)
 
-    combined_result = pd.DataFrame(agg_rows).sort_values("t_sec")
-    combined_result = combined_result.fillna(0)
-    combined_result.to_csv(output_file, index=False)
+    out_df = pd.DataFrame(agg_rows).sort_values("t_sec")
+    out_df.to_csv(output_file, index=False)
 
-    # Agregados totales
-    total_delay_count = combined_result["count"].sum()
-    delay_mean = weighted_avg(combined_result["mean"], combined_result["count"])
-    delay_min = combined_result["min"].min() if not combined_result.empty else 0
-    delay_max = combined_result["max"].max() if not combined_result.empty else 0
-
-    total_lost = combined_result["lost"].sum() if "lost" in combined_result else 0
+    # Resumen
+    total_lost = out_df["lost"].sum() if "lost" in out_df else 0
     total_lost = max(total_lost, 0)
-    total_throughput = combined_result["throughput_bytes"].sum() if "throughput_bytes" in combined_result else 0
+    total_throughput = out_df["throughput_bytes"].sum() if "throughput_bytes" in out_df else 0
 
-    total_jitter_count = combined_result["jitter_count"].sum() if "jitter_count" in combined_result else 0
-    jitter_mean = weighted_avg(combined_result["jitter_mean"], combined_result["jitter_count"]) if "jitter_mean" in combined_result else 0
-    jitter_max = combined_result["jitter_max"].max() if "jitter_max" in combined_result else 0
+    total_delay_count = out_df["delay_count"].sum() if "delay_count" in out_df else 0
+    total_delay_sum = out_df["delay_sum"].sum() if "delay_sum" in out_df else 0
+    total_delay_mean = (total_delay_sum / total_delay_count) if total_delay_count else 0
 
-    print(f"   ✅ Resultados guardados en {output_file}")
-    print(f"   📊 Retardo combinado (s): count={total_delay_count} mean={delay_mean:.6f} min={delay_min:.6f} max={delay_max:.6f}")
-    if total_jitter_count:
-        print(f"   📈 Jitter combinado (s): mean={jitter_mean:.6f} max={jitter_max:.6f}")
-    print(f"   📉 Perdidas totales bidireccionales: {total_lost}")
+    total_jitter_count = out_df["jitter_count"].sum() if "jitter_count" in out_df else 0
+    total_jitter_sum = out_df["jitter_sum"].sum() if "jitter_sum" in out_df else 0
+    total_jitter_mean = (total_jitter_sum / total_jitter_count) if total_jitter_count else 0
+    total_jitter_max = out_df["jitter_max"].max() if "jitter_max" in out_df else 0
+
+    print(f"   ✅ Guardado: {output_file}")
+    print(f"   📈 Delay mean (s): {total_delay_mean}")
+    if flow.get("jitter", False):
+        print(f"   📉 Jitter mean (s): {total_jitter_mean} | max (s): {total_jitter_max}")
+    print(f"   📦 Lost (pkts bidireccionales): {total_lost}")
     print(f"   🚚 Throughput B (bytes totales bidireccionales): {total_throughput}")
-
-# ========= resolver flujos mínimos =========
-
 def resolve_flows(flows_cfg_path, topology_path=None, pcap_root=None):
     cfg = load_yaml(flows_cfg_path)
     topo_file = topology_path or cfg.get("topology_file", "topology_conf.yml")

@@ -15,7 +15,7 @@ import yaml
 import numpy as np
 import os
 from pathlib import Path
-from typing import List
+from typing import Dict, Any, List, Tuple, Optional
 
 setLogLevel('info')
 TOPOLOGY_FILE = os.environ.get("TOPOLOGY_FILE", "topology_conf.yml")
@@ -32,59 +32,111 @@ def run_cmd(cmd):
         raise RuntimeError(f"cmd failed rc={p.returncode}\ncmd={' '.join(cmd)}\nstdout={p.stdout}\nstderr={p.stderr}")
     return p
 
-def ovs_apply_qos_linux_htb(port_name: str, cap_mbps: float, crit_ratio: float, q_limit: int = 20):
-    wait_for_port(port_name, timeout_s=5.0)
-    cap_bps = int(cap_mbps * 1_000_000)
-    crit_bps = int(cap_mbps * crit_ratio * 1_000_000)
+def _bps_from_ratio(cap_mbps: float, ratio: Optional[float]) -> Optional[int]:
+    if ratio is None:
+        return None
+    return int(cap_mbps * float(ratio) * 1_000_000)
 
-    # 1. Limpia QoS previo
+def ovs_apply_qos_linux_htb(port_name: str, cap_mbps: float, qos_cfg: Dict[str, Any]):
+    """
+    Aplica QoS linux-htb en 'port_name' con N colas definidas en qos_cfg['queues'].
+
+    Requiere qos_cfg:
+      type: "linux-htb"
+      default_queue_id: int
+      queues: [ {id, min_ratio?, max_ratio?, limit_pkts? , name? }, ... ]
+
+    Buffer por cola:
+      Se aplica con tc qdisc pfifo limit sobre parent 1:(queue_id+1).
+    """
+    wait_for_port(port_name, timeout_s=5.0)
+
+    qos_type = str(qos_cfg.get("type", "linux-htb"))
+    if qos_type != "linux-htb":
+        raise ValueError(f"Only linux-htb supported by this helper (got {qos_type})")
+
+    queues: List[Dict[str, Any]] = list(qos_cfg.get("queues", []))
+    if not queues:
+        raise ValueError("qos.queues is empty. Define at least one queue")
+
+    # Validaciones básicas
+    ids = [int(q["id"]) for q in queues]
+    if len(ids) != len(set(ids)):
+        raise ValueError(f"Duplicate queue ids in qos.queues: {ids}")
+
+    default_qid = int(qos_cfg.get("default_queue_id", 0))
+    if default_qid not in set(ids):
+        raise ValueError(f"default_queue_id={default_qid} not present in qos.queues ids={ids}")
+
+    # Construir rates
+    cap_bps = int(cap_mbps * 1_000_000)
+
+    # Chequeo: suma de mínimos no debe exceder 100% (si está configurado)
+    sum_min = 0.0
+    for q in queues:
+        if "min_ratio" in q and q["min_ratio"] is not None:
+            sum_min += float(q["min_ratio"])
+    if sum_min > 1.000001:
+        raise ValueError(f"Sum of min_ratio exceeds 1.0 ({sum_min:.3f}). Reduce guarantees.")
+
+    # 1) Limpia QoS previo
     run_cmd(["sudo", "ovs-vsctl", "--if-exists", "clear", "Port", port_name, "qos"])
 
-    # 2. Crea QoS + Queues en OVS (Tu código original)
-    # Nota: OVS mapea queues:0 -> Clase 1:1 y queues:1 -> Clase 1:2 (típicamente)
-    run_cmd([
+    # 2) Arma comando ovs-vsctl para QoS + N queues
+    cmd: List[str] = [
         "sudo", "ovs-vsctl",
         "--", "set", "Port", port_name, "qos=@qos",
         "--", "--id=@qos", "create", "QoS",
-        "type=linux-htb",
+        f"type={qos_type}",
         f"other-config:max-rate={cap_bps}",
-        "queues:0=@q0",
-        "queues:1=@q1",
-        "--", "--id=@q0", "create", "Queue",
-        f"other-config:max-rate={cap_bps}",  # Cola Default (Best Effort)
-        "--", "--id=@q1", "create", "Queue",
-        f"other-config:min-rate={crit_bps}", # Cola Crítica
-    ])
+        f"other-config:default-queue={default_qid}",
+    ]
 
-    # ---------------------------------------------------------
-    # 3. EL TRUCO: Modificar el tamaño de la cola manualmente con tc
-    # ---------------------------------------------------------
-    # OVS crea una jerarquía HTB.
-    # La Queue 0 de OVS suele mapearse a la clase minor 1 (1:1)
-    # La Queue 1 de OVS suele mapearse a la clase minor 2 (1:2)
-    
-    # Forzamos una qdisc tipo 'pfifo' (First-In First-Out) con limite exacto
-    # a las clases hijas que acaba de crear OVS.
-    
-    # Ajustar Cola 0 (Default)
-    run_cmd([
-        "sudo", "tc", "qdisc", "add", 
-        "dev", port_name, 
-        "parent", "1:1", 
-        "handle", "10:", 
-        "pfifo", "limit", str(q_limit)
-    ])
+    # mapping queues:<id>=@q<id>
+    for qid in ids:
+        cmd.append(f"queues:{qid}=@q{qid}")
 
-    # Ajustar Cola 1 (Crítica) - Opcional
-    run_cmd([
-        "sudo", "tc", "qdisc", "add", 
-        "dev", port_name, 
-        "parent", "1:2", 
-        "handle", "20:", 
-        "pfifo", "limit", str(q_limit)
-    ])
+    # define each queue object
+    for q in queues:
+        qid = int(q["id"])
+        min_bps = _bps_from_ratio(cap_mbps, q.get("min_ratio"))
+        max_bps = _bps_from_ratio(cap_mbps, q.get("max_ratio"))
 
+        # Defaults razonables
+        if max_bps is None:
+            max_bps = cap_bps
+        max_bps = max(1, min(max_bps, cap_bps))
 
+        if min_bps is not None:
+            min_bps = max(1, min(min_bps, max_bps))
+
+        cmd += ["--", f"--id=@q{qid}", "create", "Queue"]
+        # OVS linux-htb entiende min-rate/max-rate en other-config
+        if min_bps is not None and min_bps > 0:
+            cmd.append(f"other-config:min-rate={min_bps}")
+        cmd.append(f"other-config:max-rate={max_bps}")
+
+    run_cmd(cmd)
+
+    # 3) Tamaño de buffer por cola (pfifo limit en paquetes)
+    #    OVS suele mapear queue_id -> clase HTB minor = queue_id+1 => parent 1:(qid+1)
+    #    Usamos 'replace' para que sea idempotente.
+    for q in queues:
+        qid = int(q["id"])
+        limit_pkts = q.get("limit_pkts", None)
+        if limit_pkts is None:
+            continue
+
+        parent = f"1:{qid + 1}"
+        handle = f"{10 + qid}:"  # solo para que sea único
+        run_cmd([
+            "sudo", "tc", "qdisc", "replace",
+            "dev", port_name,
+            "parent", parent,
+            "handle", handle,
+            "pfifo", "limit", str(int(limit_pkts))
+        ])
+        
 def ovs_port_exists(port_name: str) -> bool:
     r = subprocess.run(
         ["sudo", "ovs-vsctl", "--if-exists", "get", "Port", port_name, "name"],
@@ -187,6 +239,7 @@ try:
 
         if node1 is None or node2 is None:
             raise ValueError(f"[{link_id}] Unknown node: {node1_name} or {node2_name}")
+        
 
         # create the link with explicit interface names
         net.addLink(

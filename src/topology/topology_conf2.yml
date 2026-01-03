@@ -365,19 +365,19 @@ hosts:
     image: "rtp_receiver_vod:latest"
     ip: "203.0.113.81/26"
     comand_default:
-      - "iperf3 -s"
+      - "iperf -s"
 
   srvUdp1: # userIperf1
     image: "rtp_receiver_vod:latest"
     ip: "203.0.113.82/26"
     comand_default:
-      - "iperf3 -s"
+      - "iperf -s"
 
   srvUdp2: # userIperf2
     image: "rtp_receiver_vod:latest"
     ip: "203.0.113.83/26"
     comand_default:
-      - "iperf3 -s"
+      - "iperf -s"
 
   cliUdp0: # userIperf3
     image: "rtp_receiver_vod:latest"

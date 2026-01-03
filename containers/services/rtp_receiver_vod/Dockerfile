@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     iputils-ping \
     iproute2 \
     curl \
+    iperf\
     iperf3 \
     wget \
     build-essential \

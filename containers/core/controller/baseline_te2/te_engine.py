@@ -1,7 +1,7 @@
 # te_engine.py
 from __future__ import annotations
 
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 
 from .utils import now
 
@@ -21,6 +21,10 @@ class TEEngine:
                  safety_factor: float = 1.2,
                  r_min_mbps: float = 0.1,
                  table_id: int = 0,
+                 managed_classes: Optional[List[str]] = None,
+                 protect_queues: Optional[List[int]] = None,
+                 lower_queue_is_higher_priority: bool = True,
+                 unknown_queue_behavior: str = "protect",
                  log_enabled: bool = True):
         self.topo = topo
         self.stats = stats
@@ -38,6 +42,30 @@ class TEEngine:
         self.K = float(K)
         self.safety_factor = float(safety_factor)
         self.r_min_mbps = float(r_min_mbps)
+        # Filtro opcional por clase: si managed_classes es None/vacío => considerar todas.
+        if managed_classes is None:
+            self.managed_classes = None
+        else:
+            mc = {str(x).strip().upper() for x in managed_classes if str(x).strip()}
+            self.managed_classes = mc if mc else None
+
+        # Protección por cola (no mover estos flows). Default: proteger la cola "más prioritaria" 0.
+        if protect_queues is None:
+            self.protect_queues = {0}
+        else:
+            self.protect_queues = {int(x) for x in protect_queues}
+
+        # Convención de prioridad:
+        # - Si lower_queue_is_higher_priority=True (default): queue_id menor => mayor prioridad.
+        #   Entonces TE empieza moviendo queue_id mayor (menos prioridad).
+        self.lower_queue_is_higher_priority = bool(lower_queue_is_higher_priority)
+
+        # Si no se conoce la cola de un cookie (None):
+        # - "protect" (default): no lo mueve
+        # - "lowest": lo trata como el de menor prioridad (lo mueve primero)
+        self.unknown_queue_behavior = str(unknown_queue_behavior or "protect").strip().lower()
+        if self.unknown_queue_behavior not in ("protect", "lowest"):
+            self.unknown_queue_behavior = "protect"
 
     def _mlu(self, sim_load: Dict[Tuple[int,int], float]) -> float:
         m = 0.0
@@ -71,16 +99,61 @@ class TEEngine:
             if Uhot <= self.hot_th:
                 continue
 
-            crit_cookies = [c for c in self.flow_mgr.link_cookies.get(hot_e, set())
-                            if self.flow_mgr.cookie_class.get(c) == "CRIT"]
-            if not crit_cookies:
+            # Candidatos en el enlace caliente:
+            # - Orden: desde MENOS prioritarios (cola más alta) hacia más prioritarios
+            # - Dentro de cada prioridad: mayor BW primero
+            all_cookies = list(self.flow_mgr.link_cookies.get(hot_e, set()))
+            if not all_cookies:
                 if self.log_enabled:
-                    self.log.info("[TE] hot=%s U=%.3f no CRIT cookies", hot_e, Uhot)
+                    self.log.info("[TE] hot=%s U=%.3f no cookies on link", hot_e, Uhot)
                 continue
 
-            crit_cookies.sort(key=lambda c: self.flow_mgr.cookie_rate_mbps.get(c, 0.0), reverse=True)
+            candidates = []
+            for c in all_cookies:
+                cls = str(self.flow_mgr.cookie_class.get(c, "")).strip().upper()
+                if self.managed_classes is not None and cls not in self.managed_classes:
+                    continue
 
-            for cookie in crit_cookies:
+                qid = self.flow_mgr.cookie_queue_id.get(c, None)
+
+                if qid is None:
+                    if self.unknown_queue_behavior == "lowest":
+                        # tratar como el de menor prioridad
+                        qid_eff = 10**9
+                    else:
+                        # protect
+                        continue
+                else:
+                    qid_eff = int(qid)
+
+                if qid_eff in self.protect_queues:
+                    continue
+
+                rate = float(self.flow_mgr.cookie_rate_mbps.get(c, 0.0))
+                candidates.append((qid_eff, rate, c))
+
+            if not candidates:
+                if self.log_enabled:
+                    self.log.info(
+                        "[TE] hot=%s U=%.3f no movable cookies (protect_queues=%s managed_classes=%s)",
+                        hot_e, Uhot, sorted(self.protect_queues),
+                        sorted(self.managed_classes) if self.managed_classes is not None else "ALL"
+                    )
+                continue
+
+            # sort: low priority first
+            # lower_queue_is_higher_priority=True => larger qid is lower priority => sort qid desc
+            if self.lower_queue_is_higher_priority:
+                candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)  # qid desc, rate desc
+            else:
+                candidates.sort(key=lambda x: (x[0], x[1]))  # qid asc, rate asc
+
+            if self.log_enabled:
+                # log top few candidates
+                topk = [(hex(c), q, round(r, 3)) for (q, r, c) in candidates[:10]]
+                self.log.info("[TE] hot=%s candidates(top10)=%s", hot_e, topk)
+
+            for (qid_eff, rate0, cookie) in candidates:
                 last = self.flow_mgr.cookie_last_move.get(cookie, 0.0)
                 if now() - last < self.cooldown_s:
                     if self.log_enabled:

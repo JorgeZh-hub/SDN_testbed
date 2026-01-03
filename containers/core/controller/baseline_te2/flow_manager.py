@@ -6,7 +6,7 @@ from typing import Dict, Set, Tuple, Optional, List, Any
 
 
 from .utils import FlowKey, FlowDescriptor, stable_u32_hash
-from .classifier import PriorityClassifier
+from .classifier import PriorityClassifier, Policy
 
 class FlowManager:
     def __init__(self,
@@ -18,6 +18,8 @@ class FlowManager:
                  queues_enable: bool = False,
                  crit_queue_id: int = 1,
                  be_queue_id: int = 0,
+                 class_to_queue: Optional[Dict[str, int]] = None,
+                 default_queue_id: Optional[int] = None,
                  classifier: Optional[PriorityClassifier] = None,
                  log_enabled: bool = True):
         self.topo = topo
@@ -29,10 +31,15 @@ class FlowManager:
         self.use_queues = bool(queues_enable)
         self.queue_id_crit = int(crit_queue_id)
         self.queue_id_be = int(be_queue_id)
+        self.class_to_queue: Dict[str, int] = {
+            str(k).strip().upper(): int(v) for (k, v) in (class_to_queue or {}).items()
+        }
+        self.default_queue_id = int(default_queue_id) if default_queue_id is not None else None
         self.classifier = classifier or PriorityClassifier([])
 
         # ---- TE indexes ----
-        self.cookie_class: Dict[int, str] = {}               # cookie -> CRIT/BE
+        self.cookie_class: Dict[int, str] = {}               # cookie -> class string
+        self.cookie_queue_id: Dict[int, Optional[int]] = {}     # cookie -> qos queue_id (even if queues disabled)
         self.cookie_edges: Dict[int, Set[Tuple[int,int]]] = {}
         self.link_cookies: Dict[Tuple[int,int], Set[int]] = defaultdict(set)
         self.cookie_last_move: Dict[int, float] = defaultdict(float)
@@ -67,7 +74,8 @@ class FlowManager:
         return base | ver
 
     def get_or_create_cookie(self, desc: FlowDescriptor) -> int:
-        cls, stable_side, stable_port, rule = self.classify_detail(desc, desc.dscp)
+        p = self.classify_policy(desc, desc.dscp)
+        cls, stable_side, stable_port, rule = p.out_class, p.stable_side, p.stable_port, p.rule_name
         ckey = self._cookie_key(desc, cls, stable_side, stable_port)
 
         cur = self._active_cookie_by_key.get(ckey)
@@ -77,13 +85,16 @@ class FlowManager:
 
             # Guardamos clase temprano (evita recalcular y ayuda a TE/stats)
             self.cookie_class[cur] = cls
+            self.cookie_queue_id[cur] = self._resolve_qos_queue_id(cls, p.queue_id)
+
 
             k = desc.key
             if self.log_enabled:
                 self.log.info(
-                    "[CLASS] new_cookie=%s class=%s rule=%s stable=%s:%s 5t=%s:%s -> %s:%s proto=%s",
+                    "[CLASS] new_cookie=%s class=%s rule=%s stable=%s:%s queue=%s 5t=%s:%s -> %s:%s proto=%s",
                     hex(cur), cls, rule or "-",
                     stable_side or "-", stable_port if stable_port is not None else "-",
+                    self._resolve_qos_queue_id(cls, p.queue_id),
                     k.ip_src or "-", k.l4_src if k.l4_src is not None else "-",
                     k.ip_dst or "-", k.l4_dst if k.l4_dst is not None else "-",
                     k.ip_proto if k.ip_proto is not None else "-"
@@ -126,20 +137,71 @@ class FlowManager:
         # fallback si por alguna razón no existe
         return self.classify(desc, dscp), None, None, None
 
+    def classify_policy(self, desc: FlowDescriptor, dscp: Optional[int]) -> Policy:
+        """Clasificación + metadatos QoS/TE.
+
+        Si el classifier implementa classify_policy(), lo usa. Si no, hace fallback.
+        """
+        k = desc.key
+        if hasattr(self.classifier, "classify_policy"):
+            return self.classifier.classify_policy(
+                src_mac=k.src_mac,
+                dst_mac=k.dst_mac,
+                ip_src=k.ip_src,
+                ip_dst=k.ip_dst,
+                ip_proto=k.ip_proto,
+                l4_src=k.l4_src,
+                l4_dst=k.l4_dst,
+                dscp=dscp,
+            )
+        cls, stable_side, stable_port, rule = self.classify_detail(desc, dscp)
+        return Policy(out_class=cls, queue_id=None, stable_side=stable_side, stable_port=stable_port, rule_name=rule, te=None)
+
     def _cookie_key(self, desc: FlowDescriptor, cls: str,
                     stable_side: Optional[str], stable_port: Optional[int]) -> Any:
         """
         Debe alinearse con el MATCH instalado.
-        - BE: no incluye L4
-        - CRIT con puerto estable: incluye (stable_side, stable_port)
+        - Por defecto no incluye L4
+        - Si la clasificación devuelve un puerto estable, incluye (stable_side, stable_port)
         """
         k = desc.key
         base = (k.eth_type, k.src_mac, k.dst_mac, k.ip_src, k.ip_dst, k.ip_proto)
 
-        if cls == "CRIT" and stable_side and stable_port and k.ip_proto in (6, 17):
+        if stable_side and stable_port is not None and k.ip_proto in (6, 17):
             return base + (stable_side, int(stable_port))
 
         return base
+
+
+    def _resolve_qos_queue_id(self, cls: str, rule_queue_id: Optional[int]) -> Optional[int]:
+        """Resuelve el queue_id *lógico* (QoS) para un flow.
+
+        Este valor se guarda en índices internos (p.ej. para TE/prioridad),
+        incluso si queues_enable=False (no se instala OFPActionSetQueue).
+
+        Precedencia:
+          1) queue indicada explícitamente por la regla (rule_queue_id)
+          2) mapeo global class_to_queue
+          3) default_queue_id
+          4) fallback legacy: CRIT->crit_queue_id, else->be_queue_id
+        """
+        if rule_queue_id is not None:
+            return int(rule_queue_id)
+        c = str(cls).strip().upper()
+        if c in self.class_to_queue:
+            return int(self.class_to_queue[c])
+        if self.default_queue_id is not None:
+            return int(self.default_queue_id)
+        # Legacy fallback (mantiene compatibilidad con CRIT/BE)
+        if c == "CRIT":
+            return int(self.queue_id_crit)
+        return int(self.queue_id_be)
+
+    def _queue_id_for_actions(self, qos_queue_id: Optional[int]) -> Optional[int]:
+        """Queue a instalar en OF actions. Solo si queues_enable=True."""
+        if not self.use_queues:
+            return None
+        return int(qos_queue_id) if qos_queue_id is not None else None
 
     # ---------- Rate updates ----------
     def update_cookie_rate(self, cookie: int, observed_mbps: float, alpha: float = 0.3):
@@ -170,6 +232,7 @@ class FlowManager:
         self.cookie_path.pop(cookie, None)
         self.cookie_desc.pop(cookie, None)
         self.cookie_class.pop(cookie, None)
+        self.cookie_queue_id.pop(cookie, None)
         self.cookie_rate_mbps.pop(cookie, None)
         self.cookie_last_move.pop(cookie, None)
 
@@ -208,23 +271,21 @@ class FlowManager:
         if k.ip_proto is not None:
             match_kwargs["ip_proto"] = int(k.ip_proto)
         # Clasificación + puerto estable (si aplica)
-        cls, stable_side, stable_port, rule = self.classify_detail(desc, desc.dscp)
+        p = self.classify_policy(desc, desc.dscp)
+        cls, stable_side, stable_port, rule = p.out_class, p.stable_side, p.stable_port, p.rule_name
         # Si es CRIT y hay puerto estable, metemos SOLO ese puerto (no el efímero)
         prio = self.priority_base
-        if cls == "CRIT" and stable_side and stable_port is not None and k.ip_proto in (6, 17):
+        if stable_side and stable_port is not None and k.ip_proto in (6, 17):
             field = ("tcp_" if k.ip_proto == 6 else "udp_") + stable_side
             match_kwargs[field] = int(stable_port)
-            prio = self.priority_base + 10  # CRIT gana a BE agregado
+            prio = self.priority_base + 10  # regla más específica gana a la agregada
         
         # si es BE, hacer el match más "L3"
         """if cls == "BE":
             match_kwargs.pop("eth_src", None)
             match_kwargs.pop("eth_dst", None)"""
-
-
-        queue_id = None
-        if self.use_queues:
-            queue_id = self.queue_id_crit if cls == "CRIT" else self.queue_id_be
+        qos_queue_id = self._resolve_qos_queue_id(cls, p.queue_id)
+        queue_id = self._queue_id_for_actions(qos_queue_id)
 
         for i in range(len(path)):
             u = path[i]
@@ -267,6 +328,8 @@ class FlowManager:
         self.cookie_desc[cookie] = desc
         if cookie not in self.cookie_class:
             self.cookie_class[cookie] = cls
+        if cookie not in self.cookie_queue_id:
+            self.cookie_queue_id[cookie] = qos_queue_id
 
         self._register_cookie_path(cookie, path)
         k = desc.key
@@ -276,7 +339,7 @@ class FlowManager:
                 hex(cookie),
                 self.cookie_class.get(cookie, "BE"),
                 stable_side or "-", stable_port if stable_port is not None else "-",
-                queue_id if queue_id is not None else "-",
+                qos_queue_id if qos_queue_id is not None else "-",
                 k.ip_src or "-", k.l4_src if k.l4_src is not None else "-",
                 k.ip_dst or "-", k.l4_dst if k.l4_dst is not None else "-",
                 k.ip_proto if k.ip_proto is not None else "-",
@@ -313,6 +376,7 @@ class FlowManager:
             return None
         cls = self.cookie_class.get(old_cookie, "BE")
         rate = self.cookie_rate_mbps.get(old_cookie, 0.0)
+        qos_qid = self.cookie_queue_id.get(old_cookie, None)
         old_path = self.cookie_path.get(old_cookie, [])
         new_cookie = self.next_cookie(old_cookie)
 
@@ -341,6 +405,7 @@ class FlowManager:
 
         self.cookie_class[new_cookie] = cls
         self.cookie_rate_mbps[new_cookie] = rate
+        self.cookie_queue_id[new_cookie] = qos_qid
         self.cookie_last_move[new_cookie] = last
         cls2, s_side, s_port, _ = self.classify_detail(desc, desc.dscp)
         ckey = self._cookie_key(desc, cls2, s_side, s_port)

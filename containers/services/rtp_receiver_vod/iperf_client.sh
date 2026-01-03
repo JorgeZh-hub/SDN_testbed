@@ -3,18 +3,18 @@
 # Usage: ./iperf_retry.sh [iperf3 options]
 # Example: ./iperf_retry.sh -c 192.51.100.22 -u -b 1M
 
-if ! command -v iperf3 >/dev/null 2>&1; then
-    echo "iperf3 is not installed. Aborting."
+if ! command -v iperf >/dev/null 2>&1; then
+    echo "iperf is not installed. Aborting."
     exit 1
 fi
 
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 [iperf3 options]"
+    echo "Usage: $0 [iperf options]"
     echo "Example: $0 -c 192.51.100.22 -u -b 1M"
     exit 1
 fi
 
-CMD="iperf3 $*"
+CMD="iperf $*"
 echo "Running command: $CMD"
 
 while true; do
