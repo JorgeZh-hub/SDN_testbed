@@ -7,11 +7,39 @@ controller:
     - "./:/app/exp"
 
 qos:
-  enabled: false
+  enabled: true
   type: "linux-htb"
-  default_queue_id: 0
-  crit_queue_id: 1
-  link_crit_ratio: 0.3 # 30% mínimo para CRIT
+
+  # Si un flow NO usa set_queue desde Ryu, cae aquí (recomendado: BEST_EFF)
+  default_queue_id: 3
+
+  # Definición de colas (ids = los que usas en OFPActionSetQueue(queue_id))
+  # min_ratio/max_ratio son fracciones de la capacidad del enlace (cap_mbps del TCLink)
+  # limit_pkts es el tamaño del buffer por cola (pfifo limit en paquetes)
+  queues:
+    - id: 0
+      name: "HI-REL"
+      min_ratio: 0.30
+      max_ratio: 1.00
+      limit_pkts: 300
+
+    - id: 1
+      name: "LOW-LAT"
+      min_ratio: 0.25
+      max_ratio: 1.00
+      limit_pkts: 250
+
+    - id: 2
+      name: "HI-THRU"
+      min_ratio: 0.15
+      max_ratio: 0.80
+      limit_pkts: 200
+
+    - id: 3
+      name: "BEST-EFF"
+      min_ratio: 0.00
+      max_ratio: 0.50
+      limit_pkts: 80
 
 hosts:
   brkMqtt0: # brokerIot0
