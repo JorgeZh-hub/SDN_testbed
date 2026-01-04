@@ -551,20 +551,20 @@ links:
   - link20: "switch4-eth3, switch15-eth1, 150" # acceso S15 no cuello
 
   # --- Hosts / Accesos (subir “elefantes” para que α escale) ---
-  - link21: "emiCoap0-eth0, switch3-eth2, 10"
+  - link21: "emiCoap0-eth0, switch3-eth2, 20"
   - link22: "srvVoIP0-eth0, switch3-eth3, 20"
-  - link23: "emiMqtt0-eth0, switch3-eth4, 10"
-  - link24: "srvUdp2-eth0, switch3-eth5, 20"
+  - link23: "emiMqtt0-eth0, switch3-eth4, 20"
+  - link24: "srvUdp2-eth0, switch3-eth5, 40"
 
   - link25: "cliVoD0-eth0, switch11-eth2, 100"
 
-  - link26: "cliIoT0-eth0, switch12-eth2, 15"
-  - link27: "emIpTV0-eth0, switch12-eth3, 100" # ELEFANTE (VOD)
-  - link28: "srvUdp0-eth0, switch12-eth4, 20"
+  - link26: "cliIoT0-eth0, switch12-eth2, 20"
+  - link27: "emIpTV0-eth0, switch17-eth2, 100" # ELEFANTE (VOD)
+  - link28: "srvUdp0-eth0, switch15-eth4, 40"
 
   - link29: "cliVC0-eth0, switch13-eth2, 50"
   - link30: "cliRtsp0-eth0, switch13-eth3, 200" # ELEFANTE (IPTV receptores)
-  - link31: "srvUdp1-eth0, switch13-eth4, 20"
+  - link31: "srvUdp1-eth0, switch13-eth4, 40"
 
   - link32: "brkAmqp0-eth0, switch14-eth2, 20"
   - link33: "brkMqtt0-eth0, switch14-eth3, 20"
@@ -573,17 +573,17 @@ links:
 
   - link36: "srvHttp0-eth0, switch15-eth2, 20"
   - link37: "srvWbS0-eth0, switch15-eth3, 20"
-  - link38: "cliUdp0-eth0, switch15-eth4, 20"
+  - link38: "cliUdp0-eth0, switch12-eth4, 40"
 
   - link39: "srvVoD0-eth0, switch16-eth2, 150" # ELEFANTE (VOD server)
   - link40: "brkMqtt1-eth0, switch16-eth3, 20"
-  - link41: "srvCoap0-eth0, switch16-eth4, 20"
-  - link42: "cliUdp1-eth0, switch16-eth5, 20"
+  - link41: "srvCoap0-eth0, switch16-eth4, 30"
+  - link42: "cliUdp1-eth0, switch16-eth5, 40"
 
-  - link43: "cliMqtt0-eth0, switch17-eth2, 10"
+  - link43: "cliMqtt0-eth0, switch12-eth3, 20"
   - link44: "cliSRT0-eth0, switch17-eth3, 100" # ELEFANTE (VOD SRT)
   - link45: "cliVoIP0-eth0, switch17-eth4, 20"
-  - link46: "cliUdp2-eth0, switch17-eth5, 20"
+  - link46: "cliUdp2-eth0, switch17-eth5, 40"
 
   - link47: "srvFtp0-eth0, switch15-eth5, 50"
   - link48: "cliFtp0-eth0, switch12-eth5, 50"
