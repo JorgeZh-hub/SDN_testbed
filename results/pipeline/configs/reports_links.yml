@@ -1,0 +1,141 @@
+# Reporte: links (estado de red por enlaces)
+# - Genera:
+#   - rep_summary.csv (por repetición)
+#   - load_summary.csv (agregado por carga)
+#   - global_timeseries_mean.csv (series globales agregadas por rep)
+#   - link_timeseries_mean.csv (series por enlace agregadas por rep)
+#   - plots/* (heatmaps + snapshot de topología en el peor instante)
+
+report: links
+
+inputs:
+  extracted_root: "data_top2_1/extracted"
+  # Estructura esperada:
+  # extracted_root/<controller>/<load>/rep_*/reports/ovs/*.csv
+  links_glob: "rep_*/reports/ovs/*.csv"
+  required_columns:
+    - timestamp
+    - src_dpid
+    - dst_dpid
+    - port_no
+    - mbps
+    - rx_drop
+    - tx_drop
+    - total_drop
+    - util_pct
+
+# Cómo agregamos/identificamos un "enlace" (para heatmap y snapshot):
+# Si tu dataset tiene 1 enlace entre pares de switches, undirected_pair es lo más limpio.
+links:
+  id_mode: "directed" # directed | directed_port | undirected_pair | undirected_pair_port
+  agg:
+    util: "max" # max | mean (agrega direcciones/puertos dentro del mismo link_id y timestamp)
+    mbps: "sum" # sum | mean | max
+    drops: "sum" # sum | max  (sobre total_drop)
+
+time:
+  align: "relative"
+  resample_s: 1 # rellena segundos faltantes con sample-and-hold
+  min_reps_per_t: 2 # solo para filtrar puntos al graficar (si hay pocas reps)
+
+# Warmup: recorta el arranque para evitar picos iniciales.
+# Para enlaces, lo detectamos con una métrica global (por defecto mean_util).
+warmup:
+  mode: "fixed" # auto | fixed | none
+  auto:
+    metric: "mean_util" # mean_util | p95_util | max_util | total_mbps | sum_drop_rate
+    idle_th: 3.0 # umbral (ej: util% promedio > 3%)
+    smooth_window_s: 5
+    sustain_s: 5
+    max_search_s: 120
+  fixed:
+    seconds: 5
+  fallback_if_not_found: 0
+
+# Definición de "peor instante" para snapshot de topología
+peak:
+  metric: "mean_util" # mean_util | p95_util | max_util | sum_drop_rate
+
+stats:
+  confidence:
+    enable: true
+    level: 0.95
+    method: "t"
+
+metrics:
+  # qué columnas de resumen se agregan en load_summary
+  summary_metrics:
+    - mean_util_avg
+    - p95_util_avg
+    - max_util_peak
+    - total_mbps_avg
+    - sum_drop_rate_avg
+    - drops_total
+
+outputs:
+  out_dir: "data_top2_1/processed/links"
+  csv:
+    rep_summary: "rep_summary.csv"
+    load_summary: "load_summary.csv"
+    global_timeseries_mean: "global_timeseries_mean.csv"
+    link_timeseries_mean: "link_timeseries_mean.csv"
+    missing: "missing_files.csv"
+  plots_dir: "data_top2_1/processed/links/plots"
+
+# Topología para el snapshot con NetworkX:
+# - positions: tú defines dónde va cada switch (en un plano 2D)
+# - edges: lista de enlaces físicos (u, v) y opcionalmente su capacity_mbps para rotular
+#
+# IMPORTANTE:
+# - Los DPIDs aquí son enteros (1..17) que coincidan con src_dpid/dst_dpid de tu CSV.
+topology:
+  nodes: [1, 2, 4, 5, 6, 7, 8, 9, 10]
+  # Layout simétrico y con más separación (núcleo como anillo alrededor de S6)
+  positions:
+    "6": [0.0, 0.0] # centro
+
+    # Núcleo (anillo simétrico)
+    "4": [0.0, 2.0] # norte
+    "5": [2.0, 1.2] # noreste
+    "7": [3.0, 0.0] # este
+    "9": [2.0, -1.2] # sureste
+    "8": [0.0, -2.0] # sur
+    "10": [-2.0, -1.2] # suroeste
+    "1": [-3.0, 0.0] # oeste
+    "2": [-2.0, 1.2] # noroeste
+
+  links:
+    - [1, 2, { "capacity_mbps": 90 }]
+    - [1, 10, { "capacity_mbps": 90 }]
+
+    - [2, 6, { "capacity_mbps": 60 }]
+    - [2, 4, { "capacity_mbps": 90 }]
+
+    - [6, 10, { "capacity_mbps": 60 }]
+    - [4, 5, { "capacity_mbps": 90 }]
+    - [5, 6, { "capacity_mbps": 60 }]
+    - [5, 7, { "capacity_mbps": 90 }]
+
+    - [6, 9, { "capacity_mbps": 60 }]
+    - [7, 9, { "capacity_mbps": 90 }]
+    - [8, 9, { "capacity_mbps": 90 }]
+    - [8, 10, { "capacity_mbps": 90 }]
+
+plots:
+  # Heatmaps para un escenario (1 controlador + 1 carga).
+  heatmaps:
+    enable: true
+    select:
+      controller: "Baseline"
+      load: "1.6a"
+    apply_warmup_cut: true
+    min_reps_per_t: 2
+    directed_pair_order: "minmax"
+
+  # Snapshot de topología en el peor instante (por carga) para 1 controlador
+  topology_snapshot_peak:
+    enable: true
+    controller: "Baseline"
+    loads: "all" # "all" o lista: ["1a","2a"]
+    edge_agg: "max" # max | mean (si hay 2 direcciones por enlace)
+
