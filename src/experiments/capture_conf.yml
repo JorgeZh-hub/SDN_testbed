@@ -61,5 +61,50 @@ flows:
     src_port: 5683
     extra_filter: "coap.mid"
 
+  - name: "rtp_iptv_send"
+    link: "emIpTV0-srvIpTV0"
+    protocol: "udp"
+    transport: "udp"
+    dst_port: 8000
+    extra_filter: ""
+    jitter: True
+
+  - name: "rtsp_iptv_rec"
+    link: "srvIpTV0-cliRtsp0"
+    protocol: "rtp"
+    transport: "tcp"
+    src_port: 8554
+    extra_filter: "rtp.seq"
+    jitter: True
+
+  - name: "srt_iptv_rec"
+    link: "srvIpTV0-cliSRT0"
+    protocol: "udt"
+    transport: "udp"
+    src_port: 8890
+    extra_filter: ""
+    jitter: True
+
+  - name: "rtp_voip"
+    link: "srvVoIP0-cliVoIP0"
+    protocol: "rtp"
+    transport: "udp"
+    extra_filter: "rtp.seq"
+    jitter: True
+
+  - name: "rtp_vc"
+    link: "srvVC0-cliVC0"
+    protocol: "rtp"
+    transport: "udp"
+    extra_filter: "rtp.seq"
+    jitter: True
+
+  - name: "ftp_transfer"
+    link: "cliFtp0-srvFtp0"
+    protocol: "tcp"
+    transport: "tcp"
+    extra_filter: ""
+
 containers:
   - "ryu-ctrl"
+ 

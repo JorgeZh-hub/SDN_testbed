@@ -203,10 +203,14 @@ def _read_tshark_tsv(path: Path) -> pd.DataFrame:
     try:
         df = pd.read_csv(
             path,
-            sep="\t",
+            sep="	",
             engine="c",
             on_bad_lines="skip",
+            # Leer como texto evita inferencia (puertos como int) y elimina DtypeWarning.
+            dtype=str,
             na_filter=False,
+            keep_default_na=False,
+            low_memory=False,
         )
     except pd.errors.EmptyDataError:
         return pd.DataFrame()
