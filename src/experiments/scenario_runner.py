@@ -561,7 +561,7 @@ def main():
                         continue
                 else:
                     # Lazily create executor + state on first use
-                    if "analysis_executor" not in locals():
+                    if ("analysis_executor" not in locals()) or (analysis_executor is None):
                         analysis_executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.max_analysis_jobs))
                         analysis_futures = deque()
 
@@ -650,6 +650,8 @@ def main():
                 analysis_executor.shutdown(wait=True, cancel_futures=False)
             except Exception:
                 pass
+            analysis_executor = None
+            analysis_futures = deque()
         # Zip y subida al final del escenario completo
         if args.rclone_dest:
             try:
