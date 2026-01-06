@@ -103,6 +103,7 @@ class TEEngine:
             # - Orden: desde MENOS prioritarios (cola más alta) hacia más prioritarios
             # - Dentro de cada prioridad: mayor BW primero
             all_cookies = list(self.flow_mgr.link_cookies.get(hot_e, set()))
+            self.log.info("[TE] hot=%s U=%.3f cookies=%d", hot_e, Uhot, len(all_cookies))
             if not all_cookies:
                 if self.log_enabled:
                     self.log.info("[TE] hot=%s U=%.3f no cookies on link", hot_e, Uhot)

@@ -209,7 +209,7 @@ class FlowManager:
         old = self.cookie_rate_mbps.get(cookie, 0.0)
         ewma = alpha * float(observed_mbps) + (1.0 - alpha) * float(old)
         # across switches, call multiple times; keep max
-        new_rate = max(old, ewma)
+        new_rate = ewma #max(old, ewma)
         self.cookie_rate_mbps[cookie] = new_rate
         if self.log_enabled:
             self.log.info(

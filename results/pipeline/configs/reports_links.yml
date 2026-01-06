@@ -9,7 +9,7 @@
 report: links
 
 inputs:
-  extracted_root: "data_top2_1/extracted"
+  extracted_root: "Prueba1_final/extracted"
   # Estructura esperada:
   # extracted_root/<controller>/<load>/rep_*/reports/ovs/*.csv
   links_glob: "rep_*/reports/ovs/*.csv"
@@ -73,14 +73,14 @@ metrics:
     - drops_total
 
 outputs:
-  out_dir: "data_top2_1/processed/links"
+  out_dir: "Prueba1_final/processed/links"
   csv:
     rep_summary: "rep_summary.csv"
     load_summary: "load_summary.csv"
     global_timeseries_mean: "global_timeseries_mean.csv"
     link_timeseries_mean: "link_timeseries_mean.csv"
     missing: "missing_files.csv"
-  plots_dir: "data_top2_1/processed/links/plots"
+  plots_dir: "Prueba1_final/processed/links/plots"
 
 # Topología para el snapshot con NetworkX:
 # - positions: tú defines dónde va cada switch (en un plano 2D)
@@ -127,7 +127,7 @@ plots:
     enable: true
     select:
       controller: "Baseline"
-      load: "1.6a"
+      load: "1.2a"
     apply_warmup_cut: true
     min_reps_per_t: 2
     directed_pair_order: "minmax"

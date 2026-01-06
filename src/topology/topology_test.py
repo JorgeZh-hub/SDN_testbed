@@ -246,8 +246,6 @@ try:
             node1, node2,
             cls=TCLink,
             bw=bw,
-            delay="1ms",
-            max_queue_size=30,
             intfName1=left,
             intfName2=right,
         )

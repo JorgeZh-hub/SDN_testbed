@@ -1,63 +1,67 @@
 report: flows
 
 inputs:
-  extracted_root: "data_top2/extracted"
+  extracted_root: "Prueba1_final/extracted"
   flows_glob: "rep_*/reports/flows/*.csv"
-  # si quieres limitar a algunos flujos:
   flow_filter: [] # ejemplo: ["rtp_vc","rtp_voip"]
-  # agrupar por flujo, protocolo, o ambos:
   group_by: ["flow", "protocol"]
 
+# Agrupación "tipo protocolo" controlada 100% por YAML:
+# - keys: el nombre del grupo (lo verás como id en summaries/plots cuando group="protocol")
+# - flows: patrones (wildcards) sobre el nombre del CSV (stem), ej: "mqtt_*"
+protocol_groups:
+  rtp:
+    flows: ["rtp_*", "voip_*"]
+  mqtt:
+    flows: ["mqtt_*"]
+  coap:
+    flows: ["coap_*"]
+  amqp:
+    flows: ["amqp_*"]
+  # si algún flow no matchea, cae a protocol del CSV / inferencia por endpoints / "unknown"
+
 units:
-  delay: "ms" # ms (desde segundos)
-  jitter: "ms" # ms (desde segundos)
-  throughput: "Mbps" # Mbps o Kbps
+  delay: "ms"
+  jitter: "ms"
+  throughput: "Mbps"
 
 filters:
-  min_count_per_row: 1 # ignora filas con count < 1 para delay/jitter
+  min_count_per_row: 1
   drop_rows_with_nan_mean: true
 
 warmup:
   mode: "none" # none | fixed | auto
   fixed_seconds: 10
   auto:
-    # detecta inicio cuando count >= th sostenido por N segundos
     count_th: 1
     sustain_s: 3
     max_search_s: 120
   fallback_if_not_found: 0
 
 loss:
-  sent_basis: "count_a" # count_a recomendado (si existe); fallback: count
-  include_negative_loss: false # tu opción clave
-  negative_policy: "clamp0" # clamp0 | keep (keep solo aplica si include_negative_loss=true)
+  sent_basis: "count_a"
+  include_negative_loss: false
 
 throughput:
-  direction: "bidirectional_total"
-  # para el "promedio final" (barras):
   normalization: "wall" # wall | active
-  # wall: total_bytes / (t_max - t_min +1)
-  # active: total_bytes / (#filas usadas)
 
 timeseries:
   include_warmup: true
-  fill_missing_seconds: "zero"
-  min_reps_per_t: 2
-  crop_to_common_time: true # <-- NUEVO
-  crop_mode: "min_tmax" # min_tmax (recomendado)
+  min_reps_per_t: 1
+  crop_to_common_time: true
 
 jitter:
-  auto_detect: true # si no hay jitter_* => jitter_mean_ms = NaN
-  plot_only_if_present: true # solo plotear ids con jitter válido
+  auto_detect: true
+  plot_only_if_present: true
 
 stats:
   confidence:
     enable: true
     level: 0.95
-    method: "t" # requiere scipy para exacto; si no, fallback 1.96
+    method: "t"
 
 outputs:
-  out_dir: "data_top2/processed/flows"
+  out_dir: "Prueba1_final/processed/flows"
   csv:
     rep_summary_flow: "rep_summary_flow.csv"
     rep_summary_protocol: "rep_summary_protocol.csv"
@@ -66,46 +70,73 @@ outputs:
     ts_throughput_flow: "ts_throughput_flow.csv"
     ts_throughput_protocol: "ts_throughput_protocol.csv"
     missing: "missing_flows.csv"
-  plots_dir: "data_top2/processed/flows/plots"
+  plots_dir: "Prueba1_final/processed/flows/plots"
+
 plots:
-  # 1) Delay promedio final vs carga (una curva por controlador) - POR PROTOCOLO
   delay_vs_load:
     enable: true
-    group: "flow"
+    group: "flow" # flow | protocol
     metric: "delay_mean_ms"
-    controllers: "all"
-    loads: "all"
+    style:
+      title: "Delay vs load - {id}"
+      xlabel: "Carga"
+      ylabel: "Delay (ms)"
+      legend_title: "Controlador"
 
-  # 2) Jitter promedio vs carga - POR PROTOCOLO (solo si existe)
   jitter_vs_load:
     enable: true
     group: "flow"
     metric: "jitter_mean_ms"
-    controllers: "all"
-    loads: "all"
+    style:
+      title: "Jitter vs load - {id}"
+      xlabel: "Carga"
+      ylabel: "Jitter (ms)"
+      legend_title: "Controlador"
 
-  # 3) Barras por protocolo: pérdida % vs carga
   loss_bars:
     enable: true
     group: "flow"
     metric: "loss_pct"
-    controllers: "all"
-    loads: "all"
+    style:
+      title: "Pérdida vs load - {id}"
+      xlabel: "Carga"
+      ylabel: "Pérdida (%)"
+      legend_title: "Controlador"
 
-  # 3b) Barras por protocolo: throughput promedio vs carga
   throughput_bars:
     enable: true
     group: "flow"
     metric: "throughput_total_mean_Mbps"
-    controllers: "all"
-    loads: "all"
+    style:
+      title: "Throughput promedio vs load - {id}"
+      xlabel: "Carga"
+      ylabel: "Throughput (Mbps)"
+      legend_title: "Controlador"
 
-  # 4) Throughput vs tiempo - TODOS los protocolos para carga 2a (una curva por controlador)
+  # Curvas 1 por controlador, para una carga seleccionada
   throughput_timeseries:
     enable: true
     group: "flow"
     select:
       load: "1.2a"
-      id: "all" # <-- NUEVO: all = iterar todos los protocolos encontrados
-    controllers: "all"
-    metric: "throughput_Mbps"
+      id: "all" # o ["rtp_vc","mqtt_pubsub"]
+      controller: "all" # o ["baseline","te"]
+    style:
+      title: "Throughput vs tiempo - load={load} - {id}"
+      xlabel: "Tiempo (s)"
+      ylabel: "Throughput (Mbps)"
+      legend_title: "Controlador"
+
+  # ✅ NUEVO: Curvas 1 por carga, para un (flow/protocol, controller) — o all
+  throughput_timeseries_loads:
+    enable: true
+    group: "flow" # flow | protocol
+    select:
+      controller: "all" # o "baseline"
+      id: "all" # o "rtp_vc"
+      loads: "all" # o ["0.6a","1.2a","2a"]
+    style:
+      title: "Throughput vs tiempo - {id} - {controller}"
+      xlabel: "Tiempo (s)"
+      ylabel: "Throughput (Mbps)"
+      legend_title: "Carga"

@@ -1,6 +1,6 @@
 flows:
   - name: "mqtt_sec_pub" # Dos flujos iguales
-    link: "emiMqtt0-brkMqtt1"
+    link: "emiCoap0-brkMqtt1"
     protocol: "mqtt"
     transport: "tcp"
     dst_port: 1883
@@ -61,14 +61,6 @@ flows:
     src_port: 5683
     extra_filter: "coap.mid"
 
-  - name: "rtp_iptv_send"
-    link: "emIpTV0-srvIpTV0"
-    protocol: "udp"
-    transport: "udp"
-    dst_port: 8000
-    extra_filter: ""
-    jitter: True
-
   - name: "rtsp_iptv_rec"
     link: "srvIpTV0-cliRtsp0"
     protocol: "rtp"
@@ -79,10 +71,10 @@ flows:
 
   - name: "srt_iptv_rec"
     link: "srvIpTV0-cliSRT0"
-    protocol: "udt"
-    transport: "udp"
-    src_port: 8890
-    extra_filter: ""
+    protocol: "rtp"
+    transport: "tcp"
+    src_port: 8554
+    extra_filter: "rtp.seq"
     jitter: True
 
   - name: "rtp_voip"
@@ -107,4 +99,3 @@ flows:
 
 containers:
   - "ryu-ctrl"
- 
