@@ -7,15 +7,18 @@ controller:
     - "./:/app/exp"
 
 qos:
-  enabled: false
+  enabled: true
   type: "linux-htb"
-
-  # Si un flow NO usa set_queue desde Ryu, cae aquí (recomendado: BEST_EFF)
   default_queue_id: 0
 
-  # Definición de colas (ids = los que usas en OFPActionSetQueue(queue_id))
-  # min_ratio/max_ratio son fracciones de la capacidad del enlace (cap_mbps del TCLink)
-  # limit_pkts es el tamaño del buffer por cola (pfifo limit en paquetes)
+  # OPTIMIZACIÓN VM:
+  apply_scope: "switch-switch" # default (más rápido). Alternativa: "all-switch-ports"
+  parallel_workers: 4 # 4–6 suele ir bien
+  post_start_sleep_s: 1.0 # 0.5–2.0
+  use_no_wait: true # acelera ovs-vsctl
+  ovs_timeout_s: 5
+  strict: false # no aborta si falla en algún puerto
+
   queues:
     - id: 3
       name: "HI-REL"
@@ -32,13 +35,13 @@ qos:
     - id: 1
       name: "HI-THRU"
       min_ratio: 0.15
-      max_ratio: 0.80
+      max_ratio: 1.00
       limit_pkts: 1000
 
     - id: 0
       name: "BEST-EFF"
       min_ratio: 0.00
-      max_ratio: 0.50
+      max_ratio: 1.00
       limit_pkts: 1000
 
 hosts:
