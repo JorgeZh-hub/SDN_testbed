@@ -1,12 +1,29 @@
 startup:
-  strict_ready: true # si falla readiness, aborta (evita clientes muriendo)
-  ready_timeout_s: 60 # cuánto esperar por cada servicio
+  # Evita .out/.err:
+  # - null: no archivos y casi sin ruido
+  # - inherit: se ve en docker logs (pero igual NO hay archivos)
+  service_stdio: "null"
+
+  # performance VM
+  qos_workers: 8
+  service_workers: 10
+  ready_workers: 8
+
+  post_switch_start_sleep_s: 0.15
+
+  strict_ready: true
+  ready_timeout_s: 60
   ready_interval_s: 0.5
-  ready_parallel_workers: 6
-  service_workers: 8 # cuánto paralelismo al arrancar comand_default
-  stdio_mode: "files" # files | null | inherit
-  logs_dir: "/sim/results/logs/host_procs"
-  pre_clients_sleep_s: 0.2
+  ready_tcp_timeout_s: 0.4
+
+  restart_exited_services: true
+  restart_max: 1
+  service_grace_s: 2.0
+
+  server_prefixes: ["srv", "brk"]
+  client_prefixes: ["cli", "emi"]
+
+  pre_burst_sleep_s: 0.4
 
 controller:
   name: "ryu-ctrl"
