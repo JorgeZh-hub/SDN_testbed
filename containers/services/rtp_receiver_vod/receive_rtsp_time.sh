@@ -1,20 +1,22 @@
 #!/bin/bash
 
 usage() {
-    echo "Usage: $0 --ip <server_ip> --path <server_path> [--duration seconds]"
-    echo "Example: $0 --ip 192.168.1.10 --path mivideo --duration 60"
+    echo "Usage: $0 --ip <server_ip> --path <server_path> [--duration seconds] [--transport udp|tcp]"
+    echo "Example: $0 --ip 192.168.1.10 --path mivideo --duration 60 --transport tcp"
     exit 1
 }
 
 server_ip=""
 stream_path=""
 duration=0  # default: run indefinitely
+transport="udp"  # default transport
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --ip) server_ip="$2"; shift ;;
         --path) stream_path="$2"; shift ;;
         --duration) duration="$2"; shift ;;
+        --transport) transport="$2"; shift ;;
         *) echo "Unknown parameter: $1"; usage ;;
     esac
     shift
@@ -24,12 +26,17 @@ if [[ -z "$server_ip" || -z "$stream_path" ]]; then
     usage
 fi
 
+case "$transport" in
+    udp|tcp) ;;
+    *) echo "Invalid transport: $transport (use udp or tcp)"; usage ;;
+esac
+
 start_time=$(date +%s)
 
 while true; do
     echo "Receiving stream from rtsp://${server_ip}:8554/${stream_path}"
 
-    ffmpeg -loglevel error -fflags nobuffer -rtsp_transport tcp \
+    ffmpeg -loglevel error -fflags nobuffer -rtsp_transport "$transport" \
       -i "rtsp://${server_ip}:8554/${stream_path}" \
       -f null - &
 

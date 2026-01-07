@@ -51,7 +51,7 @@ while true; do
     echo "Starting SIP call with media..."
     sipp -sf "$xml_file" "$server_ip" \
          -i "$client_ip" -mi "$client_ip" \
-         -t u1 -r 10 -l 1 \
+         -t u1 -r 10 -l 10 \
          -recv_timeout 10000 &
 
     sipp_pid=$!

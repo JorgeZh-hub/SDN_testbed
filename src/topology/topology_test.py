@@ -275,7 +275,7 @@ try:
         for port_name, cap in ports_to_qos:
             try:
                 info(f"*** [QOS] Applying queues port={port_name} cap={cap}Mbps crit_ratio={crit_ratio}\n")
-                ovs_apply_qos_linux_htb(port_name, cap, crit_ratio)
+                ovs_apply_qos_linux_htb(port_name, cap, qos_cfg)
                 info(f"*** [QOS] Applied queues port={port_name}\n")
             except Exception as err:
                 info(f"*** [QOS][ERROR] port={port_name} err={err}\n")

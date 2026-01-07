@@ -21,25 +21,25 @@ qos:
       name: "HI-REL"
       min_ratio: 0.30
       max_ratio: 1.00
-      limit_pkts: 300
+      limit_pkts: 1000
 
     - id: 2
       name: "LOW-LAT"
       min_ratio: 0.25
       max_ratio: 1.00
-      limit_pkts: 250
+      limit_pkts: 1000
 
     - id: 1
       name: "HI-THRU"
       min_ratio: 0.15
       max_ratio: 0.80
-      limit_pkts: 200
+      limit_pkts: 1000
 
     - id: 0
       name: "BEST-EFF"
       min_ratio: 0.00
       max_ratio: 0.50
-      limit_pkts: 80
+      limit_pkts: 1000
 
 hosts:
   brkMqtt0: # brokerIot0
@@ -77,7 +77,7 @@ hosts:
     volumes:
       - "../../containers/services/iot_container:/app"
     comand_default:
-      - "./start_http.sh -w 8 -T 16 -P 5000"
+      - "python3 server.py"
 
   srvVoD0: # serverVod0
     image: "http_server_vod:latest"
@@ -225,7 +225,7 @@ hosts:
     flows:
       - name: "0"
         n_proc: 0
-        comand_process: "./receive_rtsp_time.sh --ip 203.0.113.84 --path mivideo3 --duration {tiempo}"
+        comand_process: "./receive_rtsp_time.sh --ip 203.0.113.84 --path mivideo --duration {tiempo} --transport udp"
         estados: ["OFF1", "OFF2", "ON1", "ON2"]
         q_matrix:
           - [-0.1, 0.0, 0.1, 0.0]
@@ -246,7 +246,7 @@ hosts:
     flows:
       - name: "0"
         n_proc: 0
-        comand_process: "./receive_rtsp_time.sh --ip 203.0.113.84 --path mivideo2 --duration {tiempo}"
+        comand_process: "./receive_rtsp_time.sh --ip 203.0.113.84 --path mivideo2 --duration {tiempo} --transport tcp"
         estados: ["OFF1", "OFF2", "ON1", "ON2"]
         q_matrix:
           - [-0.1, 0.0, 0.1, 0.0]
@@ -298,10 +298,6 @@ hosts:
     comand_default:
       - "python3 coap_emisor.py 203.0.113.12 sensor/datos --bw 1"
       - "python3 coap_emisor.py 203.0.113.12 sensor/datos --bw 1"
-      - "python3 coap_emisor.py 203.0.113.12 sensor/datos --bw 1"
-      - "python3 coap_emisor.py 203.0.113.12 sensor/datos --bw 1"
-      - "python3 mqtt_emisor.py --broker 203.0.113.13 --topic sensores/medidas --bw-kbps 2500"
-      - "python3 mqtt_emisor.py --broker 203.0.113.13 --topic sensores/medidas --bw-kbps 2500"
       - "python3 mqtt_emisor.py --broker 203.0.113.13 --topic sensores/medidas --bw-kbps 2500"
       - "python3 mqtt_emisor.py --broker 203.0.113.13 --topic sensores/medidas --bw-kbps 2500"
 
@@ -470,16 +466,9 @@ hosts:
       - "python3 http_emisor.py --host 203.0.113.10 --path /datos --type PACIENTE --identifier 001 --bw-kbps 4000"
       - "python3 http_emisor.py --host 203.0.113.10 --path /datos --type PACIENTE --identifier 001 --bw-kbps 4000"
       - "python3 http_emisor.py --host 203.0.113.10 --path /datos --type PACIENTE --identifier 001 --bw-kbps 4000"
-      - "python3 http_emisor.py --host 203.0.113.10 --path /datos --type PACIENTE --identifier 001 --bw-kbps 4000"
-      - "python3 http_emisor.py --host 203.0.113.10 --path /datos --type PACIENTE --identifier 001 --bw-kbps 4000"
       - "python3 web_publisher.py --host 203.0.113.15 --port 8080 --topics sensor/temp"
       - "python3 web_publisher.py --host 203.0.113.15 --port 8080 --topics sensor/temp"
       - "python3 web_publisher.py --host 203.0.113.15 --port 8080 --topics sensor/temp"
-      - "python3 web_publisher.py --host 203.0.113.15 --port 8080 --topics sensor/temp"
-      - "python3 web_publisher.py --host 203.0.113.15 --port 8080 --topics sensor/temp"
-      - "python3 amqp_publisher.py --host 203.0.113.14 --user iotuser --password iotpass --queue iot_queue --bw 1"
-      - "python3 amqp_publisher.py --host 203.0.113.14 --user iotuser --password iotpass --queue iot_queue --bw 1"
-      - "python3 amqp_publisher.py --host 203.0.113.14 --user iotuser --password iotpass --queue iot_queue --bw 1"
       - "python3 amqp_publisher.py --host 203.0.113.14 --user iotuser --password iotpass --queue iot_queue --bw 1"
       - "python3 amqp_publisher.py --host 203.0.113.14 --user iotuser --password iotpass --queue iot_queue --bw 1"
 

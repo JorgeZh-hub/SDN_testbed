@@ -1,43 +1,41 @@
-###############################################
-# INPUT / OUTPUT PROTOCOLS
+# RTSP
+rtsp: yes
+rtspAddress: :8554
 
-rtsp:
-  enabled: yes
-  address: :8554
+# Permite RTSP sobre UDP y TCP (el handshake SIEMPRE es TCP)
+# UDP = más performant pero NAT/firewall puede romperlo.
+rtspTransports: [udp, tcp]
+rtpAddress: :8000
+rtcpAddress: :8001
 
-rtmp:
-  enabled: yes
-  address: :1935
+# (Opcional) si quieres multicast para ahorrar ancho de banda en LAN:
+# rtspTransports: [udp, multicast, tcp]
+# multicastIPRange: 224.1.0.0/16
+# multicastRTPPort: 8002
+# multicastRTCPPort: 8003
 
-srt:
-  enabled: no
-  address: :8890
+# HLS / WebRTC como los tienes (ojo: HLS es HTTP/TCP sí o sí)
+hls: yes
+hlsAddress: :8888
+hlsAllowOrigins: ['*']
 
-# HTTP-based streaming
-hls:
-  enabled: yes
-  address: :8888
-  allowOrigin: "*"
+webrtc: yes
+webrtcAddress: :8889
+webrtcEncryption: "no"
+webrtcLocalUDPAddress: :8189
+webrtcAllowOrigins: ['*']
 
-# WebRTC (WHEP)
-webrtc:
-  enabled: yes
-  address: :8889
-  encryption: no
-  localUDPAddress: :8189
-  allowOrigin: "*"
+# (Opcional) SRT (es UDP) si lo quieres habilitar
+srt: yes
+srtAddress: :8890
 
-###############################################
-# STREAM PATHS
 paths:
   mivideo:
     source: publisher
     overridePublisher: yes
-
   mivideo2:
     source: publisher
     overridePublisher: yes
-
   mivideo3:
     source: publisher
     overridePublisher: yes

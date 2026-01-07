@@ -53,6 +53,7 @@ flows:
     protocol: "coap"
     transport: "udp"
     extra_filter: "coap.mid"
+    jitter: True
 
   - name: "coap_iot_rec"
     link: "srvCoap0-cliCoap0"
@@ -60,20 +61,20 @@ flows:
     transport: "udp"
     src_port: 5683
     extra_filter: "coap.mid"
+    jitter: True
 
-  - name: "rtsp_iptv_rec"
+  - name: "rtsp_vod_rec"
     link: "srvIpTV0-cliRtsp0"
     protocol: "rtp"
     transport: "tcp"
     src_port: 8554
     extra_filter: "rtp.seq"
-    jitter: True
 
-  - name: "srt_iptv_rec"
+  - name: "rtp_iptv_rec"
     link: "srvIpTV0-cliSRT0"
     protocol: "rtp"
-    transport: "tcp"
-    src_port: 8554
+    transport: "udp"
+    src_port: 8000
     extra_filter: "rtp.seq"
     jitter: True
 
