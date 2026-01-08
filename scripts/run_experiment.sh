@@ -472,7 +472,7 @@ start_simulation() {
     ) | tee -a "$log_file"
 
 
-    "${DOCKER[@]}" run \
+    "${DOCKER[@]}" run -d --rm \
         --name "${CONTAINERNET_CONTAINER_NAME}" \
         --privileged \
         --net=host \
