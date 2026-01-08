@@ -17,7 +17,9 @@ class TEEngine:
                  hot_th: float = 0.85,
                  delta_hot: float = 0.05,
                  delta_global: float = 0.02,
-                 K: float = 5.0,
+                 Kc: float = 10.0,
+                 Ku: float = 5.0,
+                 default_link_capacity: float = 100.0,
                  safety_factor: float = 1.2,
                  r_min_mbps: float = 0.1,
                  table_id: int = 0,
@@ -39,7 +41,9 @@ class TEEngine:
         self.hot_th = float(hot_th)
         self.delta_hot = float(delta_hot)
         self.delta_global = float(delta_global)
-        self.K = float(K)
+        self.Ku = float(Ku)
+        self.Kc = float(Kc)
+        self.default_link_capacity = float(default_link_capacity)
         self.safety_factor = float(safety_factor)
         self.r_min_mbps = float(r_min_mbps)
         # Filtro opcional por clase: si managed_classes es None/vacío => considerar todas.
@@ -176,12 +180,13 @@ class TEEngine:
 
                 avoid = {hot_e, (hot_e[1], hot_e[0])}
 
-                def cost_fn(e):
+                def cost_fn(e): # Dijkstra cost function with utilization
                     # cost = 1 + K*U
                     C = self.stats.capacity_mbps(e)
                     L = sim_load.get(e, self.stats.link_load_mbps.get(e, 0.0))
                     U = (L / C) if C > 0 else 0.0
-                    return 1.0 + self.K * U
+                    D = self.default_link_capacity/C if C > 0 else float('inf')
+                    return self.Kc * D  + self.Ku * U
 
                 new_path = self.path_engine.shortest_path(
                     desc.src_dpid, desc.dst_dpid,

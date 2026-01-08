@@ -50,7 +50,8 @@ CONF.register_opts([
     cfg.FloatOpt("alpha_link", default=0.3),
     cfg.FloatOpt("alpha_flow", default=0.3),
     cfg.FloatOpt("cooldown", default=45.0),
-    cfg.FloatOpt("K", default=5.0),
+    cfg.FloatOpt("Kc", default=10.0),
+    cfg.FloatOpt("Ku", default=5.0),
     cfg.FloatOpt("safety_factor", default=1.2),
     cfg.FloatOpt("delta_hot", default=0.05),
     cfg.FloatOpt("delta_global", default=0.02),
@@ -156,7 +157,9 @@ class ReactiveIoTTE13(app_manager.RyuApp):
             hot_th=CONF.hot_th,
             delta_hot=CONF.delta_hot,
             delta_global=CONF.delta_global,
-            K=CONF.K,
+            Ku=CONF.Ku,
+            Kc=CONF.Kc,
+            default_link_capacity=CONF.default_link_capacity,
             safety_factor=CONF.safety_factor,
             r_min_mbps=CONF.r_min_mbps,
             table_id=0,
@@ -470,8 +473,13 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         desc = FlowDescriptor(src_dpid=src_sw, dst_dpid=dst_sw, key=fk, dscp=dscp)
         cookie = self.flow_mgr.get_or_create_cookie(desc)
 
+        def cost_fn(e):   # Dijkstra cost function
+                    # cost = Kc* CONF.default_link_capacity / C 
+                    C = self.stats.capacity_mbps(e)
+                    return CONF.Kc * CONF.default_link_capacity / C if C > 0 else float('inf')
+        
         # install baseline path (hop-count == cost 1)
-        path = self.path_engine.shortest_path(src_sw, dst_sw)
+        path = self.path_engine.shortest_path(src_sw, dst_sw, cost_fn=cost_fn)
         if not path:
             self.logger.warning("[PATH] no path src=%s dst=%s", src_sw, dst_sw)
             return
