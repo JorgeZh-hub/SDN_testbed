@@ -40,6 +40,7 @@ CONF.register_opts([
     cfg.FloatOpt("diagnostic_period", default=60.0),
     cfg.BoolOpt("observe_net", default=True, help="Request Port/FlowStats"),
     cfg.BoolOpt("te_activate", default=True, help="Run TE (te.run_once)"),
+    cfg.StrOpt("te_mode", default="conditional", help="TE mode: conditional|aggressive"),
     cfg.BoolOpt("logger_stats", default=True, help="Enable StatsManager logs"),
     cfg.BoolOpt("logger_flow_manager", default=True, help="Enable FlowManager logs"),
     cfg.BoolOpt("logger_te", default=True, help="Enable TEEngine logs"),
@@ -117,6 +118,16 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         lower_queue_is_higher_priority = bool(lower_queue_is_higher_priority)
 
         unknown_queue_behavior = te_cfg.get("unknown_queue_behavior", "protect")
+        # ---- TE Aggressive settings (optional) ----
+        aggr_cfg = te_cfg.get("aggressive", {})
+        if not isinstance(aggr_cfg, dict):
+            aggr_cfg = {}
+
+        queue_groups = aggr_cfg.get("queue_groups", te_cfg.get("queue_groups", None))
+        lock_ttl_s = aggr_cfg.get("lock_ttl_s", te_cfg.get("lock_ttl_s", 300.0))
+        lock_bidirectional = aggr_cfg.get("lock_bidirectional", te_cfg.get("lock_bidirectional", True))
+        max_moves_per_run = aggr_cfg.get("max_moves_per_run", te_cfg.get("max_moves_per_run", 50))
+
         self.topo = TopologyManager(self.logger)
         self.flow_mgr = FlowManager(
             topo=self.topo,
@@ -168,6 +179,11 @@ class ReactiveIoTTE13(app_manager.RyuApp):
             lower_queue_is_higher_priority=lower_queue_is_higher_priority,
             unknown_queue_behavior=unknown_queue_behavior,
             log_enabled=CONF.logger_te,
+            te_mode=CONF.te_mode,
+            queue_groups=queue_groups,
+            lock_ttl_s=lock_ttl_s,
+            lock_bidirectional=lock_bidirectional,
+            max_moves_per_run=max_moves_per_run,
         )
 
         self.logger.info(
@@ -179,10 +195,14 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         )
         if managed_classes is not None:
             self.logger.info("[INIT] TE managed_classes=%s", sorted({str(x).strip().upper() for x in managed_classes}))
+        self.logger.info("[INIT] TE mode=%s", CONF.te_mode)
         self.logger.info("[INIT] TE protect_queues=%s lower_queue_is_higher_priority=%s unknown_queue_behavior=%s",
                          sorted({int(x) for x in (protect_queues or [])}) if protect_queues is not None else [0],
                          lower_queue_is_higher_priority,
                          unknown_queue_behavior)
+        # TE aggressive config (only used when te_mode=aggressive)
+        self.logger.info("[INIT] TE aggressive lock_ttl_s=%s lock_bidirectional=%s max_moves_per_run=%s queue_groups=%s",
+                         lock_ttl_s, bool(lock_bidirectional), int(max_moves_per_run), queue_groups if queue_groups is not None else "AUTO")
         if classifier_enable:
             self.logger.info(
                 "[INIT] QoS policy_enabled=%s set_queue_actions=%s default_queue=%s class_queues=%s",
@@ -473,13 +493,11 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         desc = FlowDescriptor(src_dpid=src_sw, dst_dpid=dst_sw, key=fk, dscp=dscp)
         cookie = self.flow_mgr.get_or_create_cookie(desc)
 
-        def cost_fn(e):   # Dijkstra cost function
-                    # cost = Kc* CONF.default_link_capacity / C 
-                    C = self.stats.capacity_mbps(e)
-                    return CONF.Kc * CONF.default_link_capacity / C if C > 0 else float('inf')
-        
-        # install baseline path (hop-count == cost 1)
-        path = self.path_engine.shortest_path(src_sw, dst_sw, cost_fn=cost_fn)
+        # Ruta inicial (packet_in):
+        # - te_mode=conditional: baseline (capacidad)
+        # - te_mode=aggressive: lock-aware (preferir home locks; si no hay ruta limpia, invadir locks de menor prioridad)
+        path = self.te.pick_path_for_new_flow(desc, cookie)
+
         if not path:
             self.logger.warning("[PATH] no path src=%s dst=%s", src_sw, dst_sw)
             return

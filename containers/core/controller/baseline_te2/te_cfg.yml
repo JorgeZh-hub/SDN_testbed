@@ -16,6 +16,24 @@ te:
   unknown_queue_behavior: "protect"
   managed_classes: ["HI-THRU", "BEST-EFF"] # Clases que pueden ser movidas
 
+  # ---------------------------------------------------------------------------
+  # Aggressive mode (te_mode=aggressive): locks + grupos de colas (dedicación)
+  # - Si no defines queue_groups, el controlador crea un grupo por cada queue_id observado.
+  # - Puedes agrupar varias colas en un mismo grupo para que compartan "home" y dedicación.
+  aggressive:
+    lock_ttl_s: 300         # segundos (TTL) de un lock antes de expirar
+    lock_bidirectional: true
+    max_moves_per_run: 50   # límite de cookies movidas por ejecución (fase2). Fase1 ignora este límite.
+    queue_groups:
+      - name: GOLD
+        queues: [3]
+      - name: SILVER
+        queues: [2]
+      - name: BRONZE
+        queues: [1]
+      - name: COPPER
+        queues: [0]
+
 classifiers:
   # ===========================================================================
   # 1) IoT CONSTANTE / CONTROL / TELEMETRÍA  => HI-REL (queue 0)

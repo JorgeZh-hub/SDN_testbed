@@ -1,11 +1,33 @@
 # te_engine.py
 from __future__ import annotations
 
-from typing import Dict, Tuple, List, Optional
+from dataclasses import dataclass
+from typing import Dict, Tuple, List, Optional, Set, Callable, Iterable
 
 from .utils import now
 
+
+@dataclass
+class _LockEntry:
+    group: str
+    created_at: float
+    expires_at: float
+
+
 class TEEngine:
+    """
+    TEEngine soporta dos modos:
+      - te_mode="conditional": lógica original (solo actúa ante congestión y evalúa enfriamiento/MLU/cooldown).
+      - te_mode="aggressive": lógica basada en "link locks" + grupos de colas para intentar dedicación por grupo.
+
+    Nota:
+      - Los "locks" son por enlace dirigido (u,v). Si lock_bidirectional=True, se aplica también (v,u).
+      - En aggressive, los packet_in intentan respetar locks si existen; si no hay alternativa "clean",
+        pueden "invadir" el lock de un grupo de menor prioridad (ultimatum) para no bloquear tráfico.
+      - En aggressive, los reroutes (run_once) NO invaden locks de otros grupos: si no hay ruta limpia,
+        NO se re-enruta y NO se crea lock nuevo.
+    """
+
     def __init__(self,
                  topo,
                  stats,
@@ -27,7 +49,13 @@ class TEEngine:
                  protect_queues: Optional[List[int]] = None,
                  lower_queue_is_higher_priority: bool = True,
                  unknown_queue_behavior: str = "protect",
-                 log_enabled: bool = True):
+                 log_enabled: bool = True,
+                 # ---- New (aggressive mode) ----
+                 te_mode: str = "conditional",
+                 queue_groups: Optional[List[dict]] = None,
+                 lock_ttl_s: float = 300.0,
+                 lock_bidirectional: bool = True,
+                 max_moves_per_run: int = 50):
         self.topo = topo
         self.stats = stats
         self.path_engine = path_engine
@@ -46,6 +74,7 @@ class TEEngine:
         self.default_link_capacity = float(default_link_capacity)
         self.safety_factor = float(safety_factor)
         self.r_min_mbps = float(r_min_mbps)
+
         # Filtro opcional por clase: si managed_classes es None/vacío => considerar todas.
         if managed_classes is None:
             self.managed_classes = None
@@ -53,7 +82,7 @@ class TEEngine:
             mc = {str(x).strip().upper() for x in managed_classes if str(x).strip()}
             self.managed_classes = mc if mc else None
 
-        # Protección por cola (no mover estos flows). Default: proteger la cola "más prioritaria" 0.
+        # Protección por cola (solo aplica a conditional). Default: proteger la cola "más prioritaria" 0.
         if protect_queues is None:
             self.protect_queues = {0}
         else:
@@ -61,7 +90,6 @@ class TEEngine:
 
         # Convención de prioridad:
         # - Si lower_queue_is_higher_priority=True (default): queue_id menor => mayor prioridad.
-        #   Entonces TE empieza moviendo queue_id mayor (menos prioridad).
         self.lower_queue_is_higher_priority = bool(lower_queue_is_higher_priority)
 
         # Si no se conoce la cola de un cookie (None):
@@ -71,24 +99,340 @@ class TEEngine:
         if self.unknown_queue_behavior not in ("protect", "lowest"):
             self.unknown_queue_behavior = "protect"
 
-    def _mlu(self, sim_load: Dict[Tuple[int,int], float]) -> float:
+        # ---- Mode ----
+        tm = str(te_mode or "conditional").strip().lower()
+        if tm not in ("conditional", "aggressive"):
+            tm = "conditional"
+        self.te_mode = tm
+
+        # ---- Aggressive: lock state + queue groups ----
+        self.lock_ttl_s = float(lock_ttl_s)
+        self.lock_bidirectional = bool(lock_bidirectional)
+        self.max_moves_per_run = int(max_moves_per_run) if int(max_moves_per_run) > 0 else 0
+
+        # e=(u,v) -> LockEntry
+        self.link_lock: Dict[Tuple[int, int], _LockEntry] = {}
+
+        self._queue_to_group: Dict[int, str] = {}
+        self._group_to_queues: Dict[str, Set[int]] = {}
+        self._group_rank: Dict[str, int] = {}  # 0 = highest priority
+
+        self._init_queue_groups(queue_groups)
+
+    # ---------------------------------------------------------------------
+    # Group configuration
+    # ---------------------------------------------------------------------
+    def _init_queue_groups(self, queue_groups: Optional[List[dict]]):
+        """
+        queue_groups (YAML):
+          te:
+            aggressive:
+              queue_groups:
+                - name: GOLD
+                  queues: [3]
+                - name: SILVER
+                  queues: [2,1]
+        """
+        groups: List[Tuple[str, List[int]]] = []
+
+        if isinstance(queue_groups, list) and queue_groups:
+            for g in queue_groups:
+                if not isinstance(g, dict):
+                    continue
+                name = str(g.get("name", "")).strip().upper()
+                if not name:
+                    continue
+                qs = g.get("queues", g.get("queue_ids", []))
+                if not isinstance(qs, list):
+                    continue
+                qids = []
+                for x in qs:
+                    try:
+                        qids.append(int(x))
+                    except Exception:
+                        continue
+                qids = sorted(set(qids))
+                if not qids:
+                    continue
+                groups.append((name, qids))
+
+        # Fallback: un grupo por queue_id observado en el mapeo QoS
+        if not groups:
+            observed: Set[int] = set()
+            try:
+                observed |= set(int(v) for v in (self.flow_mgr.class_to_queue or {}).values())
+            except Exception:
+                pass
+            if self.flow_mgr.default_queue_id is not None:
+                observed.add(int(self.flow_mgr.default_queue_id))
+            # legacy fallbacks
+            observed.add(int(getattr(self.flow_mgr, "queue_id_be", 0)))
+            observed.add(int(getattr(self.flow_mgr, "queue_id_crit", 1)))
+            for qid in sorted(observed):
+                groups.append((f"Q{qid}", [qid]))
+
+        # Build maps and validate uniqueness
+        q_to_g: Dict[int, str] = {}
+        g_to_q: Dict[str, Set[int]] = {}
+        for name, qids in groups:
+            if name not in g_to_q:
+                g_to_q[name] = set()
+            for qid in qids:
+                if qid in q_to_g and q_to_g[qid] != name:
+                    # if duplicated, keep the first and warn
+                    if self.log_enabled:
+                        self.log.warning(
+                            "[TE][AGGR] queue_id=%s aparece en múltiples grupos (%s y %s). Se usará %s.",
+                            qid, q_to_g[qid], name, q_to_g[qid]
+                        )
+                    continue
+                q_to_g[qid] = name
+                g_to_q[name].add(qid)
+
+        self._queue_to_group = q_to_g
+        self._group_to_queues = g_to_q
+
+        # Rank groups by priority derived from their queue_ids
+        def prio_key(item: Tuple[str, Set[int]]) -> Tuple[float, str]:
+            g, qs = item
+            if not qs:
+                return (float("inf"), g)
+            if self.lower_queue_is_higher_priority:
+                # lower qid => higher priority => smaller key
+                return (min(qs), g)
+            # higher qid => higher priority => smaller key via negative
+            return (-max(qs), g)
+
+        ordered = sorted(g_to_q.items(), key=prio_key)
+        self._group_rank = {g: idx for idx, (g, _) in enumerate(ordered)}
+
+        if self.log_enabled:
+            self.log.info("[TE][AGGR] groups=%s", {g: sorted(list(qs)) for g, qs in self._group_to_queues.items()})
+            self.log.info("[TE][AGGR] group_rank=%s", self._group_rank)
+
+    def group_for_queue(self, qid: Optional[int]) -> str:
+        if qid is None:
+            return "UNKNOWN"
+        try:
+            q = int(qid)
+        except Exception:
+            return "UNKNOWN"
+        return self._queue_to_group.get(q, f"Q{q}")
+
+    def group_rank(self, group: str) -> int:
+        g = str(group or "").strip().upper()
+        return int(self._group_rank.get(g, 10**9))
+
+    # ---------------------------------------------------------------------
+    # Lock handling
+    # ---------------------------------------------------------------------
+    def _cleanup_locks(self):
+        if not self.link_lock:
+            return
+        t = now()
+        expired = [e for e, ent in self.link_lock.items() if ent.expires_at <= t]
+        for e in expired:
+            self.link_lock.pop(e, None)
+
+    def _active_lock_group(self, e: Tuple[int, int]) -> Optional[str]:
+        ent = self.link_lock.get(e)
+        if ent is None:
+            return None
+        if ent.expires_at <= now():
+            return None
+        return ent.group
+
+    def active_locked_edges(self) -> Set[Tuple[int, int]]:
+        self._cleanup_locks()
+        t = now()
+        return {e for e, ent in self.link_lock.items() if ent.expires_at > t}
+
+    def locked_edges_for_group(self, group: str) -> Set[Tuple[int, int]]:
+        self._cleanup_locks()
+        g = str(group or "").strip().upper()
+        t = now()
+        return {e for e, ent in self.link_lock.items() if ent.expires_at > t and ent.group == g}
+
+    def group_has_home(self, group: str) -> bool:
+        return bool(self.locked_edges_for_group(group))
+
+    def set_lock(self, e: Tuple[int, int], group: str):
+        if self.lock_ttl_s <= 0:
+            return
+        g = str(group or "").strip().upper()
+        t = now()
+        ent = _LockEntry(group=g, created_at=t, expires_at=t + self.lock_ttl_s)
+        self.link_lock[e] = ent
+        if self.lock_bidirectional:
+            rev = (e[1], e[0])
+            self.link_lock[rev] = _LockEntry(group=g, created_at=t, expires_at=t + self.lock_ttl_s)
+        if self.log_enabled:
+            self.log.info("[TE][AGGR] lock_set edge=%s group=%s ttl=%.1fs bidir=%s", e, g, self.lock_ttl_s, self.lock_bidirectional)
+
+    # ---------------------------------------------------------------------
+    # Cost helpers
+    # ---------------------------------------------------------------------
+    def _cost_capacity_only(self, e: Tuple[int, int]) -> float:
+        C = self.stats.capacity_mbps(e)
+        return (self.Kc * self.default_link_capacity / C) if C > 0 else float("inf")
+
+    def _cost_kc_ku(self, e: Tuple[int, int], sim_load: Optional[Dict[Tuple[int, int], float]] = None) -> float:
+        C = self.stats.capacity_mbps(e)
+        if C <= 0:
+            return float("inf")
+        if sim_load is None:
+            L = float(self.stats.link_load_mbps.get(e, 0.0))
+        else:
+            L = float(sim_load.get(e, self.stats.link_load_mbps.get(e, 0.0)))
+        U = L / C
+        D = self.default_link_capacity / C
+        return self.Kc * D + self.Ku * U
+
+    def _path_cost(self, path: List[int], cost_fn: Callable[[Tuple[int, int]], float]) -> float:
+        if not path or len(path) == 1:
+            return 0.0
+        c = 0.0
+        for i in range(len(path) - 1):
+            c += float(cost_fn((path[i], path[i + 1])))
+        return c
+
+    # ---------------------------------------------------------------------
+    # Path selection (aggressive packet_in)
+    # ---------------------------------------------------------------------
+    def _best_path_via_locked_edge(self,
+                                  src: int,
+                                  dst: int,
+                                  target_edges: Iterable[Tuple[int, int]],
+                                  avoid_edges: Set[Tuple[int, int]],
+                                  cost_fn: Callable[[Tuple[int, int]], float]) -> Optional[List[int]]:
+        best = None
+        best_cost = float("inf")
+        for (a, b) in target_edges:
+            # Validate edge exists in topo
+            if self.topo.neigh.get(a, {}).get(b) is None:
+                continue
+            p1 = self.path_engine.shortest_path(src, a, avoid_edges=avoid_edges, cost_fn=cost_fn)
+            if not p1:
+                continue
+            p2 = self.path_engine.shortest_path(b, dst, avoid_edges=avoid_edges, cost_fn=cost_fn)
+            if not p2:
+                continue
+            path = list(p1) + list(p2)  # introduces (a->b) since p1[-1]=a and p2[0]=b
+            # Avoid loops
+            if len(set(path)) != len(path):
+                continue
+            c = self._path_cost(path, cost_fn)
+            if c < best_cost:
+                best_cost = c
+                best = path
+        return best
+
+    def pick_path_for_new_flow(self, desc, cookie: int) -> Optional[List[int]]:
+        """
+        Selección de ruta para packet_in:
+          - conditional: ruta baseline (capacidad).
+          - aggressive: respeta locks (preferir home si existe); si no existe ruta limpia,
+            invade locks de menor prioridad como ultimátum.
+        """
+        if self.te_mode != "aggressive":
+            return self.path_engine.shortest_path(desc.src_dpid, desc.dst_dpid, cost_fn=self._cost_capacity_only)
+
+        self._cleanup_locks()
+        sim_load = self.stats.snapshot_loads()
+        active = self.active_locked_edges()
+        if not active:
+            # inicio: sin locks => se comporta como baseline
+            return self.path_engine.shortest_path(desc.src_dpid, desc.dst_dpid, cost_fn=self._cost_capacity_only)
+
+        qid = self.flow_mgr.cookie_queue_id.get(cookie, None)
+        group = self.group_for_queue(qid)
+
+        cost_fn = lambda e: self._cost_kc_ku(e, sim_load)
+
+        # 1) Preferir rutas que incluyen un "home lock" del grupo (si existe)
+        forbidden_clean = {e for e in active if self._active_lock_group(e) not in (None, group)}
+        home_edges = self.locked_edges_for_group(group)
+        if home_edges:
+            p = self._best_path_via_locked_edge(desc.src_dpid, desc.dst_dpid, home_edges, forbidden_clean, cost_fn)
+            if p:
+                return p
+
+        # 2) Ruta limpia (evita locks de otros grupos)
+        p = self.path_engine.shortest_path(desc.src_dpid, desc.dst_dpid, avoid_edges=forbidden_clean, cost_fn=cost_fn)
+        if p:
+            return p
+
+        # 3) Ultimátum: permitir "invadir" locks de grupos de menor prioridad primero (evitar los más prioritarios)
+        foreign_groups = {self._active_lock_group(e) for e in active if self._active_lock_group(e) not in (None, group)}
+        # Ordenar por menor daño: permitir primero a los de menor prioridad (rank grande)
+        foreign_ranks = sorted({self.group_rank(g) for g in foreign_groups if g is not None}, reverse=True)
+        for thr in foreign_ranks:
+            forbidden = set()
+            for e in active:
+                g = self._active_lock_group(e)
+                if g is None or g == group:
+                    continue
+                if self.group_rank(g) < thr:
+                    forbidden.add(e)
+            p = self.path_engine.shortest_path(desc.src_dpid, desc.dst_dpid, avoid_edges=forbidden, cost_fn=cost_fn)
+            if p:
+                return p
+
+        # 4) Último fallback: ignorar locks (evita bloqueo por particiones)
+        return self.path_engine.shortest_path(desc.src_dpid, desc.dst_dpid, cost_fn=cost_fn)
+
+    # ---------------------------------------------------------------------
+    # Aggressive reroute helpers (strict: NO invade locks de otros grupos)
+    # ---------------------------------------------------------------------
+    def _strict_path(self,
+                     src: int,
+                     dst: int,
+                     group: str,
+                     sim_load: Dict[Tuple[int, int], float],
+                     avoid_extra: Optional[Set[Tuple[int, int]]] = None,
+                     require_home: bool = False) -> Optional[List[int]]:
+        self._cleanup_locks()
+        active = self.active_locked_edges()
+        g = str(group or "").strip().upper()
+        avoid = set(avoid_extra or set())
+        # Evitar locks de otros grupos
+        avoid |= {e for e in active if self._active_lock_group(e) not in (None, g)}
+        cost_fn = lambda e: self._cost_kc_ku(e, sim_load)
+
+        if require_home:
+            home_edges = self.locked_edges_for_group(g)
+            if not home_edges:
+                return None
+            return self._best_path_via_locked_edge(src, dst, home_edges, avoid, cost_fn)
+
+        return self.path_engine.shortest_path(src, dst, avoid_edges=avoid, cost_fn=cost_fn)
+
+    # ---------------------------------------------------------------------
+    # Original conditional mode (unchanged logic)
+    # ---------------------------------------------------------------------
+    def _mlu(self, sim_load: Dict[Tuple[int, int], float]) -> float:
         m = 0.0
         for e, L in sim_load.items():
             C = self.stats.capacity_mbps(e)
             if C > 0:
-                m = max(m, float(L)/C)
+                m = max(m, float(L) / C)
         return m
 
     def run_once(self):
+        if self.te_mode == "aggressive":
+            return self._run_once_aggressive()
+        return self._run_once_conditional()
+
+    def _run_once_conditional(self):
         # Snapshot current loads
-        sim_load: Dict[Tuple[int,int], float] = self.stats.snapshot_loads()
+        sim_load: Dict[Tuple[int, int], float] = self.stats.snapshot_loads()
         mlu_before = self._mlu(sim_load)
         if self.log_enabled:
             self.log.info("[TE] start mlu_before=%.3f links=%d", mlu_before, len(sim_load))
 
         # Build hot links list
         hot_links = []
-        for e, Lhat in sim_load.items():
+        for e, _Lhat in sim_load.items():
             if self.stats.is_hot(e):
                 U = self.stats.util(e)
                 hot_links.append((e, U))
@@ -103,9 +447,6 @@ class TEEngine:
             if Uhot <= self.hot_th:
                 continue
 
-            # Candidatos en el enlace caliente:
-            # - Orden: desde MENOS prioritarios (cola más alta) hacia más prioritarios
-            # - Dentro de cada prioridad: mayor BW primero
             all_cookies = list(self.flow_mgr.link_cookies.get(hot_e, set()))
             self.log.info("[TE] hot=%s U=%.3f cookies=%d", hot_e, Uhot, len(all_cookies))
             if not all_cookies:
@@ -123,10 +464,8 @@ class TEEngine:
 
                 if qid is None:
                     if self.unknown_queue_behavior == "lowest":
-                        # tratar como el de menor prioridad
-                        qid_eff = 10**9
+                        qid_eff = 10 ** 9
                     else:
-                        # protect
                         continue
                 else:
                     qid_eff = int(qid)
@@ -141,24 +480,24 @@ class TEEngine:
                 if self.log_enabled:
                     self.log.info(
                         "[TE] hot=%s U=%.3f no movable cookies (protect_queues=%s managed_classes=%s)",
-                        hot_e, Uhot, sorted(self.protect_queues),
-                        sorted(self.managed_classes) if self.managed_classes is not None else "ALL"
+                        hot_e,
+                        Uhot,
+                        sorted(self.protect_queues),
+                        sorted(self.managed_classes) if self.managed_classes is not None else "ALL",
                     )
                 continue
 
             # sort: low priority first
-            # lower_queue_is_higher_priority=True => larger qid is lower priority => sort qid desc
             if self.lower_queue_is_higher_priority:
                 candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)  # qid desc, rate desc
             else:
                 candidates.sort(key=lambda x: (x[0], x[1]))  # qid asc, rate asc
 
             if self.log_enabled:
-                # log top few candidates
                 topk = [(hex(c), q, round(r, 3)) for (q, r, c) in candidates[:10]]
                 self.log.info("[TE] hot=%s candidates(top10)=%s", hot_e, topk)
 
-            for (qid_eff, rate0, cookie) in candidates:
+            for (qid_eff, _rate0, cookie) in candidates:
                 last = self.flow_mgr.cookie_last_move.get(cookie, 0.0)
                 if now() - last < self.cooldown_s:
                     if self.log_enabled:
@@ -180,19 +519,19 @@ class TEEngine:
 
                 avoid = {hot_e, (hot_e[1], hot_e[0])}
 
-                def cost_fn(e): # Dijkstra cost function with utilization
-                    # cost = 1 + K*U
+                def cost_fn(e):  # Dijkstra cost function with utilization
                     C = self.stats.capacity_mbps(e)
                     L = sim_load.get(e, self.stats.link_load_mbps.get(e, 0.0))
                     U = (L / C) if C > 0 else 0.0
-                    D = self.default_link_capacity/C if C > 0 else float('inf')
-                    return self.Kc * D  + self.Ku * U
+                    D = self.default_link_capacity / C if C > 0 else float("inf")
+                    return self.Kc * D + self.Ku * U
 
                 new_path = self.path_engine.shortest_path(
-                    desc.src_dpid, desc.dst_dpid,
+                    desc.src_dpid,
+                    desc.dst_dpid,
                     avoid_edges=avoid,
                     min_residual_mbps=r_need,
-                    cost_fn=cost_fn
+                    cost_fn=cost_fn,
                 )
                 if not new_path:
                     if self.log_enabled:
@@ -200,7 +539,7 @@ class TEEngine:
                     continue
 
                 old_edges = self.flow_mgr.cookie_edges.get(cookie, set())
-                new_edges = set((new_path[i], new_path[i+1]) for i in range(len(new_path)-1))
+                new_edges = set((new_path[i], new_path[i + 1]) for i in range(len(new_path) - 1))
 
                 # what-if simulate
                 sim2 = dict(sim_load)
@@ -209,8 +548,9 @@ class TEEngine:
                 for e in new_edges:
                     sim2[e] = sim2.get(e, 0.0) + r
 
-                Uhot_before = (sim_load.get(hot_e, 0.0) / self.stats.capacity_mbps(hot_e)) if self.stats.capacity_mbps(hot_e)>0 else 0.0
-                Uhot_after = (sim2.get(hot_e, 0.0) / self.stats.capacity_mbps(hot_e)) if self.stats.capacity_mbps(hot_e)>0 else 0.0
+                cap_hot = self.stats.capacity_mbps(hot_e)
+                Uhot_before = (sim_load.get(hot_e, 0.0) / cap_hot) if cap_hot > 0 else 0.0
+                Uhot_after = (sim2.get(hot_e, 0.0) / cap_hot) if cap_hot > 0 else 0.0
                 if (Uhot_before - Uhot_after) < self.delta_hot:
                     if self.log_enabled:
                         self.log.info(
@@ -257,6 +597,194 @@ class TEEngine:
                 mlu_before = mlu_after
 
                 # stop moving more flows for this hot link if it cooled enough
-                Uhot_new = (sim_load.get(hot_e, 0.0) / self.stats.capacity_mbps(hot_e)) if self.stats.capacity_mbps(hot_e)>0 else 0.0
+                Uhot_new = (sim_load.get(hot_e, 0.0) / cap_hot) if cap_hot > 0 else 0.0
                 if Uhot_new <= (self.hot_th - 0.02):
                     break
+
+    # ---------------------------------------------------------------------
+    # Aggressive mode
+    # ---------------------------------------------------------------------
+    def _run_once_aggressive(self):
+        self._cleanup_locks()
+
+        sim_load: Dict[Tuple[int, int], float] = self.stats.snapshot_loads()
+        # Build hot links list
+        hot_links = []
+        for e in sim_load.keys():
+            if self.stats.is_hot(e):
+                U = self.stats.util(e)
+                if U > self.hot_th:
+                    hot_links.append((e, U))
+        hot_links.sort(key=lambda x: x[1], reverse=True)
+        if self.log_enabled:
+            if hot_links:
+                self.log.info("[TE][AGGR] hot_links=%s", hot_links)
+            else:
+                self.log.info("[TE][AGGR] no hot links; exit")
+
+        moves_done = 0
+
+        for (hot_e, Uhot) in hot_links:
+            cookies = list(self.flow_mgr.link_cookies.get(hot_e, set()))
+            if not cookies:
+                continue
+
+            # Si el enlace caliente solo tiene una cola, no re-enrutar (regla puntual).
+            qids = []
+            for c in cookies:
+                qids.append(self.flow_mgr.cookie_queue_id.get(c, None))
+            uniq_q = {q for q in qids}
+            if len(uniq_q) <= 1:
+                if self.log_enabled:
+                    self.log.info("[TE][AGGR] hot=%s U=%.3f only_one_queue=%s -> skip", hot_e, Uhot, list(uniq_q)[0])
+                continue
+
+            rev = (hot_e[1], hot_e[0])
+
+            def cookie_group(c: int) -> str:
+                qid = self.flow_mgr.cookie_queue_id.get(c, None)
+                return self.group_for_queue(qid)
+
+            # --------------------------
+            # Phase 1: Si algún grupo en el enlace ya tiene "home lock", intentar moverlo a su home (strict)
+            # --------------------------
+            groups_on_hot = {cookie_group(c) for c in cookies}
+            home_groups = [g for g in groups_on_hot if self.group_has_home(g)]
+            home_groups.sort(key=lambda g: self.group_rank(g))  # higher priority first
+
+            if self.log_enabled:
+                self.log.info(
+                    "[TE][AGGR] hot=%s U=%.3f queues=%s groups=%s home_groups=%s locks=%s",
+                    hot_e,
+                    Uhot,
+                    sorted({self.flow_mgr.cookie_queue_id.get(c, None) for c in cookies}),
+                    sorted(groups_on_hot, key=lambda g: self.group_rank(g)),
+                    home_groups,
+                    {e: self._active_lock_group(e) for e in sorted(list(self.active_locked_edges()))},
+                )
+
+            for g in home_groups:
+                # Si el enlace caliente ya está locked para este grupo, no lo movemos en fase1.
+                if self._active_lock_group(hot_e) == str(g).strip().upper():
+                    continue
+                # recalc current cookies on hot edge (pueden haber cambiado por reroute previo)
+                cur = list(self.flow_mgr.link_cookies.get(hot_e, set()))
+                cur_g = [c for c in cur if cookie_group(c) == g]
+                if not cur_g:
+                    continue
+                moved_g = 0
+                for c in cur_g:
+                    desc = self.flow_mgr.cookie_desc.get(c)
+                    if desc is None:
+                        continue
+                    old_path = self.flow_mgr.cookie_path.get(c, [])
+                    new_path = self._strict_path(desc.src_dpid, desc.dst_dpid, g, sim_load,
+                                                 avoid_extra={hot_e, rev}, require_home=True)
+                    if not new_path or new_path == old_path:
+                        continue
+                    new_cookie = self.flow_mgr.reroute_cookie(c, new_path, table_id=self.table_id)
+                    if new_cookie is None:
+                        continue
+                    moved_g += 1
+                    moves_done += 1
+                if self.log_enabled and moved_g:
+                    self.log.info("[TE][AGGR] hot=%s phase1 moved group=%s moves=%d", hot_e, g, moved_g)
+
+            # After phase1, re-evaluate if link is now dedicated
+            cookies2 = list(self.flow_mgr.link_cookies.get(hot_e, set()))
+            if not cookies2:
+                continue
+            uniq_q2 = {self.flow_mgr.cookie_queue_id.get(c, None) for c in cookies2}
+            if len(uniq_q2) <= 1:
+                # Ya quedó con una sola cola: opcionalmente asignar lock al grupo remanente
+                remaining_group = cookie_group(cookies2[0])
+                if self.log_enabled:
+                    self.log.info("[TE][AGGR] hot=%s after phase1 now_single_queue=%s group=%s", hot_e, list(uniq_q2)[0], remaining_group)
+                # Lock: útil para packet_in (dedicación). No cuenta como reroute.
+                self.set_lock(hot_e, remaining_group)
+                continue
+
+            # --------------------------
+            # Phase 2: Dedicación del enlace caliente al grupo más prioritario (si podemos mover los otros)
+            # --------------------------
+            groups2 = {cookie_group(c) for c in cookies2}
+            keeper = min(groups2, key=lambda g: self.group_rank(g))  # highest priority
+            to_move = [c for c in cookies2 if cookie_group(c) != keeper]
+            if not to_move:
+                continue
+
+            # Feasibility: para cada cookie, necesitamos alguna ruta limpia evitando hot_e y locks de otros grupos
+            candidate_paths: Dict[int, List[int]] = {}
+            feasible = True
+            for c in to_move:
+                g = cookie_group(c)
+                desc = self.flow_mgr.cookie_desc.get(c)
+                if desc is None:
+                    feasible = False
+                    break
+                p = self._strict_path(desc.src_dpid, desc.dst_dpid, g, sim_load,
+                                      avoid_extra={hot_e, rev}, require_home=False)
+                if not p:
+                    feasible = False
+                    break
+                candidate_paths[c] = p
+
+            if not feasible:
+                if self.log_enabled:
+                    self.log.info("[TE][AGGR] hot=%s phase2 abort: cannot move all non-keeper groups (keeper=%s)", hot_e, keeper)
+                continue
+
+            # Orden de movimiento: menos prioritarios primero, mayor rate primero
+            def move_sort_key(c: int):
+                g = cookie_group(c)
+                r = float(self.flow_mgr.cookie_rate_mbps.get(c, 0.0))
+                # lower_queue_is_higher_priority => rank smaller = higher; move high rank first
+                return (self.group_rank(g), -r)
+
+            to_move_sorted = sorted(to_move, key=move_sort_key, reverse=True)
+
+            # Apply budget (si aplica). Importante: lock solo si se movieron TODOS.
+            if self.max_moves_per_run and (moves_done >= self.max_moves_per_run):
+                if self.log_enabled:
+                    self.log.info("[TE][AGGR] budget exhausted max_moves_per_run=%d", self.max_moves_per_run)
+                break
+
+            budget_left = (self.max_moves_per_run - moves_done) if self.max_moves_per_run else len(to_move_sorted)
+            moving_now = to_move_sorted[:budget_left] if self.max_moves_per_run else to_move_sorted
+
+            moved2 = 0
+            for c in moving_now:
+                p = candidate_paths.get(c)
+                if not p:
+                    continue
+                old_path = self.flow_mgr.cookie_path.get(c, [])
+                if p == old_path:
+                    continue
+                new_cookie = self.flow_mgr.reroute_cookie(c, p, table_id=self.table_id)
+                if new_cookie is None:
+                    continue
+                moved2 += 1
+                moves_done += 1
+
+            if self.log_enabled:
+                self.log.info("[TE][AGGR] hot=%s phase2 moved=%d keeper=%s remaining_budget=%s",
+                              hot_e, moved2, keeper,
+                              (self.max_moves_per_run - moves_done) if self.max_moves_per_run else "inf")
+
+            # Lock solo si se movieron TODOS los no-keeper (no parcial)
+            moved_all = (len(moving_now) == len(to_move_sorted))
+            if moved_all:
+                cookies3 = list(self.flow_mgr.link_cookies.get(hot_e, set()))
+                uniq_q3 = {self.flow_mgr.cookie_queue_id.get(c, None) for c in cookies3}
+                if len(uniq_q3) <= 1:
+                    self.set_lock(hot_e, keeper)
+                else:
+                    if self.log_enabled:
+                        self.log.info("[TE][AGGR] hot=%s phase2 moved_all but still multi-queue=%s -> no lock",
+                                      hot_e, sorted(list(uniq_q3)))
+            else:
+                if self.log_enabled:
+                    self.log.info("[TE][AGGR] hot=%s phase2 partial_moves=%d/%d -> lock deferred",
+                                  hot_e, len(moving_now), len(to_move_sorted))
+
+        return
