@@ -407,7 +407,87 @@ class TEEngine:
 
         return self.path_engine.shortest_path(src, dst, avoid_edges=avoid, cost_fn=cost_fn)
 
-    # ---------------------------------------------------------------------
+
+
+    def _aggr_evacuate_reverse(self,
+                              edge: Tuple[int, int],
+                              keeper: str,
+                              sim_load: Dict[Tuple[int, int], float],
+                              avoid_extra: Set[Tuple[int, int]],
+                              moves_done_ref: List[int]) -> None:
+        """Best-effort: mover flujos NO-keeper fuera de 'edge' (normalmente el reverse del hot link).
+
+        Se ejecuta cuando ya decidimos dedicar el enlace caliente al keeper y queremos que el sentido
+        contrario también quede lo más "limpio" posible (no solo lock).
+
+        - Usa rutas strict (no invade locks de otros grupos)
+        - Respeta max_moves_per_run (global) si está configurado
+        """
+        cookies = list(self.flow_mgr.link_cookies.get(edge, set()))
+        if not cookies:
+            return
+
+        def cookie_group(c: int) -> str:
+            qid = self.flow_mgr.cookie_queue_id.get(c, None)
+            return self.group_for_queue(qid)
+
+        groups_on_edge = {cookie_group(c) for c in cookies}
+        if len(groups_on_edge) <= 1:
+            return
+
+        keeper_g = str(keeper).strip().upper()
+        to_move = [c for c in cookies if cookie_group(c) != keeper_g]
+        if not to_move:
+            return
+
+        moved = 0
+        failed = 0
+        moved_by_group: Dict[str, int] = {}
+        failed_by_group: Dict[str, int] = {}
+
+        for c in to_move:
+            # Budget global
+            if self.max_moves_per_run and (moves_done_ref[0] >= self.max_moves_per_run):
+                break
+
+            g = cookie_group(c)
+            desc = self.flow_mgr.cookie_desc.get(c)
+            if desc is None:
+                failed += 1
+                failed_by_group[g] = failed_by_group.get(g, 0) + 1
+                continue
+
+            old_path = self.flow_mgr.cookie_path.get(c, [])
+            p = self._strict_path(desc.src_dpid, desc.dst_dpid, g, sim_load, avoid_extra=set(avoid_extra), require_home=False)
+            if not p or p == old_path:
+                failed += 1
+                failed_by_group[g] = failed_by_group.get(g, 0) + 1
+                continue
+
+            new_cookie = self.flow_mgr.reroute_cookie(c, p, table_id=self.table_id)
+            if new_cookie is None:
+                failed += 1
+                failed_by_group[g] = failed_by_group.get(g, 0) + 1
+                continue
+
+            moved += 1
+            moved_by_group[g] = moved_by_group.get(g, 0) + 1
+            moves_done_ref[0] += 1
+
+        if self.log_enabled and (moved or failed):
+            self.log.info(
+                "[TE][AGGR] reverse_evacuate edge=%s keeper=%s moved=%d failed=%d budget_left=%s",
+                edge,
+                keeper_g,
+                moved,
+                failed,
+                (self.max_moves_per_run - moves_done_ref[0]) if self.max_moves_per_run else "inf",
+            )
+            if moved_by_group:
+                self.log.info("[TE][AGGR] reverse_evacuate moved_by_group=%s", moved_by_group)
+            if failed_by_group:
+                self.log.info("[TE][AGGR] reverse_evacuate failed_by_group=%s", failed_by_group)
+
     # Original conditional mode (unchanged logic)
     # ---------------------------------------------------------------------
     def _mlu(self, sim_load: Dict[Tuple[int, int], float]) -> float:
@@ -608,14 +688,16 @@ class TEEngine:
         self._cleanup_locks()
 
         sim_load: Dict[Tuple[int, int], float] = self.stats.snapshot_loads()
+
         # Build hot links list
-        hot_links = []
+        hot_links: List[Tuple[Tuple[int, int], float]] = []
         for e in sim_load.keys():
             if self.stats.is_hot(e):
                 U = self.stats.util(e)
                 if U > self.hot_th:
                     hot_links.append((e, U))
         hot_links.sort(key=lambda x: x[1], reverse=True)
+
         if self.log_enabled:
             if hot_links:
                 self.log.info("[TE][AGGR] hot_links=%s", hot_links)
@@ -629,26 +711,39 @@ class TEEngine:
             if not cookies:
                 continue
 
-            # Si el enlace caliente solo tiene una cola, no re-enrutar (regla puntual).
-            qids = []
-            for c in cookies:
-                qids.append(self.flow_mgr.cookie_queue_id.get(c, None))
-            uniq_q = {q for q in qids}
-            if len(uniq_q) <= 1:
-                if self.log_enabled:
-                    self.log.info("[TE][AGGR] hot=%s U=%.3f only_one_queue=%s -> skip", hot_e, Uhot, list(uniq_q)[0])
-                continue
-
             rev = (hot_e[1], hot_e[0])
 
             def cookie_group(c: int) -> str:
                 qid = self.flow_mgr.cookie_queue_id.get(c, None)
                 return self.group_for_queue(qid)
 
+            def edge_groups(edge: Tuple[int, int]) -> Set[str]:
+                cs = self.flow_mgr.link_cookies.get(edge, set())
+                if not cs:
+                    return set()
+                return {cookie_group(c) for c in cs}
+
+            def edge_queue_ids(edge: Tuple[int, int]) -> List[Optional[int]]:
+                cs = self.flow_mgr.link_cookies.get(edge, set())
+                return sorted({self.flow_mgr.cookie_queue_id.get(c, None) for c in cs})
+
+            # Regla puntual: si el enlace caliente ya está dedicado a un solo GRUPO, no re-enrutar.
+            groups_on_hot = edge_groups(hot_e)
+            if len(groups_on_hot) <= 1:
+                g = next(iter(groups_on_hot)) if groups_on_hot else None
+                if self.log_enabled:
+                    self.log.info(
+                        "[TE][AGGR] hot=%s U=%.3f single_group=%s queues=%s -> skip",
+                        hot_e, Uhot, g, edge_queue_ids(hot_e)
+                    )
+                # Si no hay lock, conviene fijarlo para que packet_in lo prefiera como "home".
+                if g and self._active_lock_group(hot_e) is None:
+                    self.set_lock(hot_e, g)
+                continue
+
             # --------------------------
             # Phase 1: Si algún grupo en el enlace ya tiene "home lock", intentar moverlo a su home (strict)
             # --------------------------
-            groups_on_hot = {cookie_group(c) for c in cookies}
             home_groups = [g for g in groups_on_hot if self.group_has_home(g)]
             home_groups.sort(key=lambda g: self.group_rank(g))  # higher priority first
 
@@ -657,8 +752,8 @@ class TEEngine:
                     "[TE][AGGR] hot=%s U=%.3f queues=%s groups=%s home_groups=%s locks=%s",
                     hot_e,
                     Uhot,
-                    sorted({self.flow_mgr.cookie_queue_id.get(c, None) for c in cookies}),
-                    sorted(groups_on_hot, key=lambda g: self.group_rank(g)),
+                    edge_queue_ids(hot_e),
+                    sorted(list(groups_on_hot), key=lambda g: self.group_rank(g)),
                     home_groups,
                     {e: self._active_lock_group(e) for e in sorted(list(self.active_locked_edges()))},
                 )
@@ -667,19 +762,23 @@ class TEEngine:
                 # Si el enlace caliente ya está locked para este grupo, no lo movemos en fase1.
                 if self._active_lock_group(hot_e) == str(g).strip().upper():
                     continue
-                # recalc current cookies on hot edge (pueden haber cambiado por reroute previo)
+
+                # Recalcular cookies en el hot link (pueden cambiar por reroutes previos).
                 cur = list(self.flow_mgr.link_cookies.get(hot_e, set()))
                 cur_g = [c for c in cur if cookie_group(c) == g]
                 if not cur_g:
                     continue
+
                 moved_g = 0
                 for c in cur_g:
                     desc = self.flow_mgr.cookie_desc.get(c)
                     if desc is None:
                         continue
                     old_path = self.flow_mgr.cookie_path.get(c, [])
-                    new_path = self._strict_path(desc.src_dpid, desc.dst_dpid, g, sim_load,
-                                                 avoid_extra={hot_e, rev}, require_home=True)
+                    new_path = self._strict_path(
+                        desc.src_dpid, desc.dst_dpid, g, sim_load,
+                        avoid_extra={hot_e, rev}, require_home=True
+                    )
                     if not new_path or new_path == old_path:
                         continue
                     new_cookie = self.flow_mgr.reroute_cookie(c, new_path, table_id=self.table_id)
@@ -687,33 +786,52 @@ class TEEngine:
                         continue
                     moved_g += 1
                     moves_done += 1
+
                 if self.log_enabled and moved_g:
                     self.log.info("[TE][AGGR] hot=%s phase1 moved group=%s moves=%d", hot_e, g, moved_g)
 
-            # After phase1, re-evaluate if link is now dedicated
-            cookies2 = list(self.flow_mgr.link_cookies.get(hot_e, set()))
-            if not cookies2:
-                continue
-            uniq_q2 = {self.flow_mgr.cookie_queue_id.get(c, None) for c in cookies2}
-            if len(uniq_q2) <= 1:
-                # Ya quedó con una sola cola: opcionalmente asignar lock al grupo remanente
-                remaining_group = cookie_group(cookies2[0])
+            # After phase1, re-evaluate dedication
+            groups_after = edge_groups(hot_e)
+            if len(groups_after) <= 1 and groups_after:
+                remaining_group = next(iter(groups_after))
                 if self.log_enabled:
-                    self.log.info("[TE][AGGR] hot=%s after phase1 now_single_queue=%s group=%s", hot_e, list(uniq_q2)[0], remaining_group)
-                # Lock: útil para packet_in (dedicación). No cuenta como reroute.
+                    self.log.info(
+                        "[TE][AGGR] hot=%s after phase1 now_single_group=%s queues=%s",
+                        hot_e, remaining_group, edge_queue_ids(hot_e)
+                    )
                 self.set_lock(hot_e, remaining_group)
                 continue
 
             # --------------------------
-            # Phase 2: Dedicación del enlace caliente al grupo más prioritario (si podemos mover los otros)
+            # Phase 2: Dedicación del enlace caliente a un grupo "keeper"
             # --------------------------
+            cookies2 = list(self.flow_mgr.link_cookies.get(hot_e, set()))
+            if not cookies2:
+                continue
+
             groups2 = {cookie_group(c) for c in cookies2}
-            keeper = min(groups2, key=lambda g: self.group_rank(g))  # highest priority
+            if len(groups2) <= 1:
+                remaining_group = next(iter(groups2))
+                if self.log_enabled:
+                    self.log.info(
+                        "[TE][AGGR] hot=%s after phase1 already_single_group=%s queues=%s",
+                        hot_e, remaining_group, edge_queue_ids(hot_e)
+                    )
+                self.set_lock(hot_e, remaining_group)
+                continue
+
+            # Si el enlace ya tiene lock activo para un grupo presente, ese grupo SIEMPRE es keeper.
+            locked_here = self._active_lock_group(hot_e)
+            if locked_here is not None and locked_here in groups2:
+                keeper = locked_here
+            else:
+                keeper = min(groups2, key=lambda g: self.group_rank(g))  # highest priority
+
             to_move = [c for c in cookies2 if cookie_group(c) != keeper]
             if not to_move:
                 continue
 
-            # Feasibility: para cada cookie, necesitamos alguna ruta limpia evitando hot_e y locks de otros grupos
+            # Feasibility: necesitamos poder mover TODO lo no-keeper (sin invadir locks ajenos).
             candidate_paths: Dict[int, List[int]] = {}
             feasible = True
             for c in to_move:
@@ -722,8 +840,10 @@ class TEEngine:
                 if desc is None:
                     feasible = False
                     break
-                p = self._strict_path(desc.src_dpid, desc.dst_dpid, g, sim_load,
-                                      avoid_extra={hot_e, rev}, require_home=False)
+                p = self._strict_path(
+                    desc.src_dpid, desc.dst_dpid, g, sim_load,
+                    avoid_extra={hot_e, rev}, require_home=False
+                )
                 if not p:
                     feasible = False
                     break
@@ -731,19 +851,21 @@ class TEEngine:
 
             if not feasible:
                 if self.log_enabled:
-                    self.log.info("[TE][AGGR] hot=%s phase2 abort: cannot move all non-keeper groups (keeper=%s)", hot_e, keeper)
+                    self.log.info(
+                        "[TE][AGGR] hot=%s phase2 abort: cannot move all non-keeper groups (keeper=%s)",
+                        hot_e, keeper
+                    )
                 continue
 
             # Orden de movimiento: menos prioritarios primero, mayor rate primero
             def move_sort_key(c: int):
                 g = cookie_group(c)
                 r = float(self.flow_mgr.cookie_rate_mbps.get(c, 0.0))
-                # lower_queue_is_higher_priority => rank smaller = higher; move high rank first
                 return (self.group_rank(g), -r)
 
             to_move_sorted = sorted(to_move, key=move_sort_key, reverse=True)
 
-            # Apply budget (si aplica). Importante: lock solo si se movieron TODOS.
+            # Budget (si aplica). Nota: fase1 ignora budget.
             if self.max_moves_per_run and (moves_done >= self.max_moves_per_run):
                 if self.log_enabled:
                     self.log.info("[TE][AGGR] budget exhausted max_moves_per_run=%d", self.max_moves_per_run)
@@ -752,39 +874,109 @@ class TEEngine:
             budget_left = (self.max_moves_per_run - moves_done) if self.max_moves_per_run else len(to_move_sorted)
             moving_now = to_move_sorted[:budget_left] if self.max_moves_per_run else to_move_sorted
 
+            # ---- "Pending lock" (temporal) para evitar que packet_in reinstale nuevos flujos no-keeper
+            # sobre el enlace caliente mientras se está migrando.
+            pending_created: Optional[float] = None
+            pending_ttl = min(2.0, max(0.5, float(self.te_period)))
+            if self.link_lock.get(hot_e) is None:
+                t0 = now()
+                pending_created = t0
+                self.link_lock[hot_e] = _LockEntry(group=str(keeper).strip().upper(), created_at=t0, expires_at=t0 + pending_ttl)
+                if self.lock_bidirectional:
+                    self.link_lock[rev] = _LockEntry(group=str(keeper).strip().upper(), created_at=t0, expires_at=t0 + pending_ttl)
+
+            committed = False
             moved2 = 0
-            for c in moving_now:
-                p = candidate_paths.get(c)
-                if not p:
-                    continue
-                old_path = self.flow_mgr.cookie_path.get(c, [])
-                if p == old_path:
-                    continue
-                new_cookie = self.flow_mgr.reroute_cookie(c, p, table_id=self.table_id)
-                if new_cookie is None:
-                    continue
-                moved2 += 1
-                moves_done += 1
+            failed2 = 0
+            moved_by_group: Dict[str, int] = {}
+            failed_by_group: Dict[str, int] = {}
 
-            if self.log_enabled:
-                self.log.info("[TE][AGGR] hot=%s phase2 moved=%d keeper=%s remaining_budget=%s",
-                              hot_e, moved2, keeper,
-                              (self.max_moves_per_run - moves_done) if self.max_moves_per_run else "inf")
+            try:
+                for c in moving_now:
+                    g = cookie_group(c)
+                    p = candidate_paths.get(c)
+                    if not p:
+                        failed2 += 1
+                        failed_by_group[g] = failed_by_group.get(g, 0) + 1
+                        continue
+                    old_path = self.flow_mgr.cookie_path.get(c, [])
+                    if p == old_path:
+                        # No debería ocurrir (avoid hot_e), pero si pasa lo tratamos como fallo para no lockear.
+                        failed2 += 1
+                        failed_by_group[g] = failed_by_group.get(g, 0) + 1
+                        continue
+                    new_cookie = self.flow_mgr.reroute_cookie(c, p, table_id=self.table_id)
+                    if new_cookie is None:
+                        failed2 += 1
+                        failed_by_group[g] = failed_by_group.get(g, 0) + 1
+                        continue
+                    moved2 += 1
+                    moved_by_group[g] = moved_by_group.get(g, 0) + 1
+                    moves_done += 1
 
-            # Lock solo si se movieron TODOS los no-keeper (no parcial)
-            moved_all = (len(moving_now) == len(to_move_sorted))
-            if moved_all:
-                cookies3 = list(self.flow_mgr.link_cookies.get(hot_e, set()))
-                uniq_q3 = {self.flow_mgr.cookie_queue_id.get(c, None) for c in cookies3}
-                if len(uniq_q3) <= 1:
-                    self.set_lock(hot_e, keeper)
+                if self.log_enabled:
+                    self.log.info(
+                        "[TE][AGGR] hot=%s phase2 attempted=%d moved=%d failed=%d keeper=%s remaining_budget=%s",
+                        hot_e,
+                        len(moving_now),
+                        moved2,
+                        failed2,
+                        keeper,
+                        (self.max_moves_per_run - moves_done) if self.max_moves_per_run else "inf",
+                    )
+                    if moved_by_group:
+                        self.log.info("[TE][AGGR] hot=%s phase2 moved_by_group=%s", hot_e, moved_by_group)
+                    if failed_by_group:
+                        self.log.info("[TE][AGGR] hot=%s phase2 failed_by_group=%s", hot_e, failed_by_group)
+
+                # Solo intentamos lockear si:
+                #  - NO hubo budget que recorte (moving_now == to_move_sorted)
+                #  - NO hubo fallos (moved2 == len(moving_now))
+                attempted_all = (len(moving_now) == len(to_move_sorted))
+                success_all = attempted_all and (moved2 == len(moving_now)) and (failed2 == 0)
+
+                if success_all:
+                    groups3 = edge_groups(hot_e)
+                    if groups3 == {keeper}:
+                        self.set_lock(hot_e, keeper)
+                        committed = True
+                        # Si lock_bidirectional está activo, intentamos también LIMPIAR el sentido contrario
+                        # (mover flujos no-keeper fuera del reverse), no solo lockearlo.
+                        if self.lock_bidirectional:
+                            md_ref = [moves_done]
+                            self._aggr_evacuate_reverse(rev, keeper, sim_load, avoid_extra={hot_e, rev}, moves_done_ref=md_ref)
+                            moves_done = md_ref[0]
+
+                    else:
+                        if self.log_enabled:
+                            self.log.info(
+                                "[TE][AGGR] hot=%s phase2 success_all but still multi_group=%s queues=%s -> no lock",
+                                hot_e,
+                                sorted(list(groups3), key=lambda g: self.group_rank(g)),
+                                edge_queue_ids(hot_e),
+                            )
                 else:
                     if self.log_enabled:
-                        self.log.info("[TE][AGGR] hot=%s phase2 moved_all but still multi-queue=%s -> no lock",
-                                      hot_e, sorted(list(uniq_q3)))
-            else:
-                if self.log_enabled:
-                    self.log.info("[TE][AGGR] hot=%s phase2 partial_moves=%d/%d -> lock deferred",
-                                  hot_e, len(moving_now), len(to_move_sorted))
+                        if not attempted_all:
+                            self.log.info(
+                                "[TE][AGGR] hot=%s phase2 partial_due_budget=%d/%d -> lock deferred",
+                                hot_e, len(moving_now), len(to_move_sorted)
+                            )
+                        else:
+                            self.log.info(
+                                "[TE][AGGR] hot=%s phase2 not_all_moved=%d/%d -> lock deferred",
+                                hot_e, moved2, len(to_move_sorted)
+                            )
+
+            finally:
+                # Quitar pending lock si no se consolidó con set_lock()
+                if pending_created is not None and not committed:
+                    ent = self.link_lock.get(hot_e)
+                    if ent and ent.created_at == pending_created and ent.group == str(keeper).strip().upper():
+                        self.link_lock.pop(hot_e, None)
+                    if self.lock_bidirectional:
+                        ent2 = self.link_lock.get(rev)
+                        if ent2 and ent2.created_at == pending_created and ent2.group == str(keeper).strip().upper():
+                            self.link_lock.pop(rev, None)
 
         return

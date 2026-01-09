@@ -232,6 +232,23 @@ class FlowManager:
         for e in edges:
             self.link_cookies[e].add(cookie)
 
+
+    def _unregister_cookie_path_only(self, cookie: int):
+        """Quita el cookie de link_cookies para su path anterior, sin borrar desc/clase/queue.
+
+        Necesario cuando re-instalamos el MISMO cookie en un path distinto (packet_in),
+        para no dejar índices stale en link_cookies.
+        """
+        edges = self.cookie_edges.get(cookie, set())
+        for e in edges:
+            s = self.link_cookies.get(e)
+            if s:
+                s.discard(cookie)
+                if not s:
+                    self.link_cookies.pop(e, None)
+        self.cookie_edges.pop(cookie, None)
+        self.cookie_path.pop(cookie, None)
+
     def _unregister_cookie(self, cookie: int):
         edges = self.cookie_edges.pop(cookie, set())
         for e in edges:
@@ -341,6 +358,12 @@ class FlowManager:
             self.cookie_class[cookie] = cls
         if cookie not in self.cookie_queue_id:
             self.cookie_queue_id[cookie] = qos_queue_id
+
+        # Si este cookie ya tenía un path, debemos limpiar sus edges anteriores del índice link_cookies
+        # antes de registrar el nuevo path, para evitar cookies "stale" en enlaces viejos.
+        old_path = self.cookie_path.get(cookie)
+        if old_path and old_path != path:
+            self._unregister_cookie_path_only(cookie)
 
         self._register_cookie_path(cookie, path)
         k = desc.key

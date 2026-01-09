@@ -461,7 +461,8 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         l4 = pkt.get_protocol(tcp.tcp) or pkt.get_protocol(udp.udp) or pkt.get_protocol(icmp.icmp)
 
         # resolve src/dst switch (L2 learning)
-        src_sw = dpid
+        # src_sw debe ser el switch de acceso donde está el host (no el switch que generó el PacketIn si es un miss intermedio)
+        src_sw = self.flow_mgr.hosts.get(eth.src, (dpid, in_port))[0]
         dst_sw = None
         hosts_snapshot = dict(self.flow_mgr.hosts)
         #self.logger.info("[L2] lookup dst_mac=%s hosts=%s", eth.dst, hosts_snapshot)
@@ -493,10 +494,14 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         desc = FlowDescriptor(src_dpid=src_sw, dst_dpid=dst_sw, key=fk, dscp=dscp)
         cookie = self.flow_mgr.get_or_create_cookie(desc)
 
-        # Ruta inicial (packet_in):
-        # - te_mode=conditional: baseline (capacidad)
-        # - te_mode=aggressive: lock-aware (preferir home locks; si no hay ruta limpia, invadir locks de menor prioridad)
-        path = self.te.pick_path_for_new_flow(desc, cookie)
+        # Ruta para este cookie.
+        # IMPORTANTE: si el cookie ya tiene un path (instalado previamente), NO recalculamos en cada PacketIn,
+        # porque un miss intermedio puede llegar desde un switch distinto (dpid), lo que causaría paths parciales y "flapping".
+        existing_path = self.flow_mgr.cookie_path.get(cookie)
+        if existing_path and existing_path[0] == src_sw and existing_path[-1] == dst_sw:
+            path = existing_path
+        else:
+            path = self.te.pick_path_for_new_flow(desc, cookie)
 
         if not path:
             self.logger.warning("[PATH] no path src=%s dst=%s", src_sw, dst_sw)
