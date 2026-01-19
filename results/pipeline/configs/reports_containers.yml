@@ -1,7 +1,7 @@
 report: containers
 
 inputs:
-  extracted_root: "data_top1/extracted"
+  extracted_root: "Prueba2/extracted"
   containers_glob: "rep_*/reports/containers/*.csv"
   container_filter: ["ryu-ctrl"] # [] = todos
   required_columns:
@@ -17,6 +17,10 @@ time:
   align: "relative"
   resample_s: 1
   min_reps_per_t: 3 # para graficar series (el CSV igual guarda todo)
+  resample_method: "interpolate" # sample_hold | interpolate
+  interpolation:
+    method: "linear"
+  crop_to_common_time: true # si true, recorta las series al mínimo t_rel común entre reps (por controller/load/container)
 
 warmup:
   mode: "auto" # auto | fixed | none
@@ -40,56 +44,111 @@ metrics:
   cpu_mean_perc:
     kind: "gauge_mean"
     column: "cpu_perc"
+    label: "CPU promedio"
+    unit: "percent"
+
+  cpu_p95_perc:
+    kind: "gauge_quantile"
+    column: "cpu_perc"
+    quantile: 0.95
+    label: "CPU p95"
     unit: "percent"
 
   ram_mean_mib:
     kind: "gauge_mean"
     column: "mem_used_bytes"
     transform: "bytes_to_mib"
+    label: "RAM promedio"
     unit: "MiB"
 
   io_write_total_mib:
     kind: "counter_total"
     column: "block_write_bytes"
     transform: "bytes_to_mib"
+    label: "IO write total"
     unit: "MiB"
 
   io_write_rate_kib_s:
     kind: "counter_rate"
     column: "block_write_bytes"
     transform: "bytes_to_kib"
+    label: "IO write rate"
     unit: "KiB/s"
 
 outputs:
-  out_dir: "data_top1/processed/containers"
+  out_dir: "Prueba2/processed/containers"
   csv:
     rep_summary: "rep_summary.csv"
     load_summary: "load_summary.csv"
     timeseries_mean: "timeseries_mean.csv"
     missing: "missing_files.csv"
-  plots_dir: "data_top1/processed/containers/plots"
+  plots_dir: "Prueba2/processed/containers/plots"
 
 plots:
   bar_by_load:
     enable: true
     container: "ryu-ctrl"
-    metrics: ["cpu_mean_perc", "ram_mean_mib", "io_write_total_mib"]
+    load_suffix: "n"
+    metrics: ["cpu_p95_perc", "ram_mean_mib"]
     error: "ci" # usa IC95%
+    loads: ["0a", "1a", "8a", "12a"] # o lista explícita: ["4a","6a","8a"]
+    labels:
+      title: ""
+      xlabel: "Carga"
+      ylabel: "CPU P95 (%)"
+      legend: "Controlador"
 
   timeseries_avg_reps:
     enable: false
     select:
-      controller: "test_newTop_TE"
-      load: "1a"
+      controller: "Baseline"
+      load: "8a"
       container: "ryu-ctrl"
     metrics: ["cpu_mean_perc", "ram_mean_mib", "io_write_rate_kib_s"]
+    labels:
+      title: "Series promedio por réplica"
+      xlabel: "Tiempo (s)"
+      legend: "Métrica"
+    show_ci: true
+    smooth:
+      enable: false
+      window_points: 3
 
   timeseries_multi_controllers:
     enable: true
     select:
-      load: "1a"
+      load: "12a"
       container: "ryu-ctrl"
       controllers: "all"
-    metrics: ["cpu_mean_perc", "ram_mean_mib", "io_write_rate_kib_s"]
-    min_reps_per_t: 2 # filtro SOLO para graficar (evita colas con pocas reps)
+    metrics: ["ram_mean_mib"]
+    min_reps_per_t: 5 # filtro SOLO para graficar (evita colas con pocas reps)
+    labels:
+      title: ""
+      ylabel: "RAM (MiB)"
+      xlabel: "Tiempo (s)"
+      legend: "Controlador"
+    show_ci: true
+    smooth:
+      enable: true
+      window_points: 3
 
+  timeseries_multi_controllers_faceted:
+    enable: true
+    select:
+      load: "10a"
+      container: "ryu-ctrl"
+      controllers: "all"
+    metrics:
+      ["cpu_mean_perc", "cpu_p95_perc", "ram_mean_mib", "io_write_rate_kib_s"]
+    min_reps_per_t: 5
+    labels:
+      title: ""
+      xlabel: "Tiempo (s)"
+      ylabel: "% CPU"
+      legend: ""
+      grid: true
+    show_ci: true
+    smooth:
+      enable: false
+      window_points: 3
+    show_peaks: false

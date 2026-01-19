@@ -74,6 +74,22 @@ def unit_throughput_factor(units: str) -> float:
         return 8.0 / 1e3
     return 8.0 / 1e6  # default Mbps
 
+def slugify(val: str) -> str:
+    s = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(val))
+    s = s.strip("_")
+    return s or "all"
+
+def maybe_smooth(series: pd.Series, smooth_cfg: dict) -> pd.Series:
+    if not smooth_cfg or not smooth_cfg.get("enable", False):
+        return series
+    try:
+        w = int(smooth_cfg.get("window_points", 3))
+    except Exception:
+        w = 3
+    if w <= 1:
+        return series
+    return series.rolling(window=w, min_periods=1, center=True).mean()
+
 
 # -------------------------
 # Warmup auto (por count)
@@ -425,6 +441,75 @@ def plot_timeseries_multi(ts_df: pd.DataFrame, out_path: Path, metric: str, min_
     ax.set_ylabel(metric)
     ax.set_title(f"{metric} vs tiempo (promedio sobre reps)")
     ax.legend()
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+
+def plot_timeseries_compare_ids(ts_df: pd.DataFrame, out_path: Path, ids: List[str], controllers: List[str],
+                                id_labels: dict, labels_cfg: dict, show_ci: bool, min_reps_per_t: int,
+                                crop_common_time: bool, smooth_cfg: dict):
+    mean_col = "throughput_Mbps_mean"
+    low_col = "throughput_Mbps_ci95_low"
+    high_col = "throughput_Mbps_ci95_high"
+    count_col = "throughput_Mbps_count"
+
+    df = ts_df.copy().sort_values(["controller", "id", "t_rel_s"])
+    if count_col in df.columns:
+        df = df[df[count_col] >= min_reps_per_t]
+    df = df.dropna(subset=[mean_col])
+    if df.empty:
+        print(f"WARNING: serie vacía -> {out_path}")
+        return
+
+    series = []
+    for ctrl in controllers:
+        for idv in ids:
+            d = df[(df["controller"] == ctrl) & (df["id"] == idv)].sort_values("t_rel_s")
+            if not d.empty:
+                series.append((ctrl, idv, d))
+
+    if not series:
+        print(f"WARNING: no hay datos para ids={ids} controllers={controllers} -> {out_path}")
+        return
+
+    if crop_common_time:
+        tmax_list = [int(s[2]["t_rel_s"].max()) for s in series if not s[2].empty]
+        if tmax_list:
+            common_tmax = min(tmax_list)
+            series = [(c, i, d[d["t_rel_s"] <= common_tmax].copy()) for (c, i, d) in series]
+
+    fig, ax = plt.subplots()
+    multi_ctrl = len({c for c, _, _ in series}) > 1
+
+    for ctrl, idv, d in series:
+        label_id = id_labels.get(idv, idv)
+        label = f"{label_id} ({ctrl})" if multi_ctrl else label_id
+
+        mean_s = maybe_smooth(d[mean_col], smooth_cfg)
+        ax.plot(d["t_rel_s"], mean_s, label=label)
+
+        if show_ci and low_col in d.columns and high_col in d.columns:
+            low_s = maybe_smooth(d[low_col], smooth_cfg)
+            high_s = maybe_smooth(d[high_col], smooth_cfg)
+            mask = low_s.notna() & high_s.notna()
+            if mask.any():
+                ax.fill_between(d.loc[mask, "t_rel_s"], low_s[mask], high_s[mask], alpha=0.15)
+
+    title_tpl = (labels_cfg or {}).get("title", "Throughput vs tiempo")
+    ctrl_title = controllers[0] if len(controllers) == 1 else "all"
+    try:
+        title = title_tpl.format(id=", ".join(ids), controller=ctrl_title)
+    except Exception:
+        title = title_tpl
+
+    ax.set_title(title)
+    ax.set_xlabel((labels_cfg or {}).get("xlabel", "Tiempo (s)"))
+    ax.set_ylabel((labels_cfg or {}).get("ylabel", "Throughput (Mbps)"))
+    legend_title = (labels_cfg or {}).get("legend", "")
+    if legend_title:
+        ax.legend(title=legend_title)
+    else:
+        ax.legend()
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
@@ -885,6 +970,119 @@ def main():
                     plot_timeseries_multi(d, outp, metric="throughput_Mbps", min_reps_per_t=min_reps,
                                         crop_to_common_time=crop_common)
                     print(f"OK plot: {outp}")
+
+    # 4b) throughput timeseries por carga (loop de loads e ids)
+    if plots.get("throughput_timeseries_loads", {}).get("enable", False):
+        pcfg = plots["throughput_timeseries_loads"]
+        group = pcfg.get("group", "flow")
+        sel = pcfg.get("select", {})
+        loads_sel = sel.get("loads", "all")
+        ids_sel = sel.get("id", "all")
+        ctrl_sel = sel.get("controller", "all")
+        dfT = pick_ts_df(group)
+
+        if dfT.empty:
+            print("WARNING: no hay datos de timeseries para throughput_timeseries_loads")
+        else:
+            avail_loads = sorted(dfT["load"].dropna().unique().tolist(), key=natural_load_key)
+            if loads_sel == "all" or loads_sel is None:
+                loads = avail_loads
+            elif isinstance(loads_sel, list):
+                loads = loads_sel
+            else:
+                loads = [loads_sel]
+
+            avail_ctrls = sorted(dfT["controller"].dropna().unique().tolist())
+            if ctrl_sel == "all" or ctrl_sel is None:
+                ctrl_list = avail_ctrls
+            elif isinstance(ctrl_sel, list):
+                ctrl_list = ctrl_sel
+            else:
+                ctrl_list = [ctrl_sel]
+
+            if ids_sel == "all" or ids_sel is None:
+                ids_list = sorted(dfT["id"].dropna().unique().tolist())
+            elif isinstance(ids_sel, list):
+                ids_list = ids_sel
+            else:
+                ids_list = [ids_sel]
+
+            min_reps = int(cfg["timeseries"].get("min_reps_per_t", 1))
+            crop_common = bool(cfg["timeseries"].get("crop_to_common_time", False))
+            ctrl_slug = slugify("-".join(ctrl_list)) if ctrl_list else "all"
+
+            for load_iter in loads:
+                for one_id in ids_list:
+                    d = dfT[(dfT["load"] == load_iter) & (dfT["id"] == one_id)]
+                    d = d[d["controller"].isin(ctrl_list)]
+                    if d.empty:
+                        continue
+                    outp = plots_dir / f"ts_throughput_load_{group}_{load_iter}_{one_id}_{ctrl_slug}.png"
+                    plot_timeseries_multi(d, outp, metric="throughput_Mbps", min_reps_per_t=min_reps,
+                                          crop_to_common_time=crop_common)
+                    print(f"OK plot: {outp}")
+
+    # 4c) throughput timeseries comparativo: varias ids en la misma gráfica por carga
+    if plots.get("throughput_timeseries_compare", {}).get("enable", False):
+        pcfg = plots["throughput_timeseries_compare"]
+        group = pcfg.get("group", "flow")
+        sel = pcfg.get("select", {})
+        loads_sel = sel.get("loads", "all")
+        ids_sel = sel.get("id", "all")
+        ctrl_sel = sel.get("controller", "all")
+        dfT = pick_ts_df(group)
+
+        if dfT.empty:
+            print("WARNING: no hay datos de timeseries para throughput_timeseries_compare")
+        else:
+            avail_loads = sorted(dfT["load"].dropna().unique().tolist(), key=natural_load_key)
+            if loads_sel == "all" or loads_sel is None:
+                loads = avail_loads
+            elif isinstance(loads_sel, list):
+                loads = loads_sel
+            else:
+                loads = [loads_sel]
+
+            avail_ctrls = sorted(dfT["controller"].dropna().unique().tolist())
+            if ctrl_sel == "all" or ctrl_sel is None:
+                ctrl_base = avail_ctrls
+            elif isinstance(ctrl_sel, list):
+                ctrl_base = ctrl_sel
+            else:
+                ctrl_base = [ctrl_sel]
+
+            if ids_sel == "all" or ids_sel is None:
+                ids_base = sorted(dfT["id"].dropna().unique().tolist())
+            elif isinstance(ids_sel, list):
+                ids_base = ids_sel
+            else:
+                ids_base = [ids_sel]
+
+            min_reps = int(cfg["timeseries"].get("min_reps_per_t", 1))
+            crop_common = bool(cfg["timeseries"].get("crop_to_common_time", False))
+            show_ci = bool(pcfg.get("show_ci", True))
+            smooth_cfg = pcfg.get("smooth", {})
+            id_labels = pcfg.get("id_labels", {})
+            labels_cfg = pcfg.get("labels", {})
+
+            for load_iter in loads:
+                df_load = dfT[dfT["load"] == load_iter]
+                if df_load.empty:
+                    continue
+
+                ctrls_use = [c for c in ctrl_base if c in df_load["controller"].unique()]
+                if not ctrls_use:
+                    continue
+
+                ids_use = ids_base if ids_sel != "all" else sorted(df_load["id"].dropna().unique().tolist())
+                ids_use = [i for i in ids_use if i in df_load["id"].unique()]
+                if not ids_use:
+                    continue
+
+                outp = plots_dir / f"ts_throughput_compare_{group}_{load_iter}_{slugify('-'.join(ctrls_use))}.png"
+                plot_timeseries_compare_ids(df_load, outp, ids_use, ctrls_use, id_labels, labels_cfg,
+                                            show_ci, min_reps, crop_common, smooth_cfg)
+                print(f"OK plot: {outp}")
 
 
 

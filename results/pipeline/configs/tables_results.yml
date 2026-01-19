@@ -1,0 +1,31 @@
+input_csv: "Prueba2/processed/flows/load_summary_flow.csv"
+output_dir: "Prueba2/processed/flows/tables"
+decimals: 4
+selection:
+  controllers: ["OSPF", "TE_QOS_C2", "TE_QOS_D2"] # ["allo "all"
+  loads: "all" # ["1a", "5a", "8a"] # o "all"
+  flows: ["mqtt_sec_sub", "rtp_voip", "rtp_iptv_rec", "udp_noise"] # o "all"
+
+flow_labels:
+  mqtt_sec_sub: "MQTT-IOT"
+  rtp_voip: "RTP-VoIP"
+  rtp_iptv_rec: "RTP-IPTV"
+  udp_noise: "UDP-Ruido"
+
+tables:
+  - name: delay
+    metric: delay_mean_ms # base del campo en load_summary_flow
+    stat: mean # mean|min|max (usa la columna <metric>_<stat>)
+    unit: ms
+  - name: jitter
+    metric: jitter_mean_ms
+    stat: mean
+    unit: ms
+  - name: throughput
+    metric: throughput_total_mean_Mbps
+    stat: mean
+    unit: Mbps
+  - name: loss
+    metric: loss_pct
+    stat: mean
+    unit: "%"

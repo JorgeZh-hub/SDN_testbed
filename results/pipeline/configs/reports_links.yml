@@ -9,7 +9,7 @@
 report: links
 
 inputs:
-  extracted_root: "Prueba1_final/extracted"
+  extracted_root: "Prueba2/extracted"
   # Estructura esperada:
   # extracted_root/<controller>/<load>/rep_*/reports/ovs/*.csv
   links_glob: "rep_*/reports/ovs/*.csv"
@@ -37,6 +37,12 @@ time:
   align: "relative"
   resample_s: 1 # rellena segundos faltantes con sample-and-hold
   min_reps_per_t: 2 # solo para filtrar puntos al graficar (si hay pocas reps)
+  crop_to_common_time: false # si true, recorta series al mínimo t_rel común entre reps (global y por enlace)
+
+metric_labels:
+  util_pct_mean: "Utilización (%)"
+  drop_rate_mean: "Pérdida (pps)"
+  mbps: "Throughput (Mbps)"
 
 # Warmup: recorta el arranque para evitar picos iniciales.
 # Para enlaces, lo detectamos con una métrica global (por defecto mean_util).
@@ -73,14 +79,14 @@ metrics:
     - drops_total
 
 outputs:
-  out_dir: "Prueba1_final/processed/links"
+  out_dir: "Prueba2/processed/links"
   csv:
     rep_summary: "rep_summary.csv"
     load_summary: "load_summary.csv"
     global_timeseries_mean: "global_timeseries_mean.csv"
     link_timeseries_mean: "link_timeseries_mean.csv"
     missing: "missing_files.csv"
-  plots_dir: "Prueba1_final/processed/links/plots"
+  plots_dir: "Prueba2/processed/links/plots"
 
 # Topología para el snapshot con NetworkX:
 # - positions: tú defines dónde va cada switch (en un plano 2D)
@@ -89,53 +95,60 @@ outputs:
 # IMPORTANTE:
 # - Los DPIDs aquí son enteros (1..17) que coincidan con src_dpid/dst_dpid de tu CSV.
 topology:
-  nodes: [1, 2, 4, 5, 6, 7, 8, 9, 10]
+  nodes: [1, 2, 5, 7, 9, 10]
   # Layout simétrico y con más separación (núcleo como anillo alrededor de S6)
   positions:
     "6": [0.0, 0.0] # centro
 
     # Núcleo (anillo simétrico)
-    "4": [0.0, 2.0] # norte
     "5": [2.0, 1.2] # noreste
     "7": [3.0, 0.0] # este
     "9": [2.0, -1.2] # sureste
-    "8": [0.0, -2.0] # sur
     "10": [-2.0, -1.2] # suroeste
     "1": [-3.0, 0.0] # oeste
     "2": [-2.0, 1.2] # noroeste
 
   links:
-    - [1, 2, { "capacity_mbps": 90 }]
-    - [1, 10, { "capacity_mbps": 90 }]
+    - [1, 2, { "capacity_mbps": 250 }]
+    - [1, 10, { "capacity_mbps": 250 }]
 
-    - [2, 6, { "capacity_mbps": 60 }]
-    - [2, 4, { "capacity_mbps": 90 }]
+    - [2, 5, { "capacity_mbps": 90 }]
+    - [2, 9, { "capacity_mbps": 90 }]
 
-    - [6, 10, { "capacity_mbps": 60 }]
-    - [4, 5, { "capacity_mbps": 90 }]
-    - [5, 6, { "capacity_mbps": 60 }]
-    - [5, 7, { "capacity_mbps": 90 }]
-
-    - [6, 9, { "capacity_mbps": 60 }]
-    - [7, 9, { "capacity_mbps": 90 }]
-    - [8, 9, { "capacity_mbps": 90 }]
-    - [8, 10, { "capacity_mbps": 90 }]
+    - [10, 5, { "capacity_mbps": 90 }]
+    - [10, 9, { "capacity_mbps": 90 }]
+    - [5, 7, { "capacity_mbps": 250 }]
+    - [7, 9, { "capacity_mbps": 250 }]
 
 plots:
-  # Heatmaps para un escenario (1 controlador + 1 carga).
+  # Heatmaps para un escenario (1 controlador + 1 carga) — solo uso de enlaces.
   heatmaps:
     enable: true
     select:
-      controller: "Baseline"
-      load: "1.2a"
+      controller: "TE_QOS_C"
+      load: "9a"
     apply_warmup_cut: true
     min_reps_per_t: 2
     directed_pair_order: "minmax"
+    time_window:
+      start_s: 10 # ej: 10
+      end_s: 350 # ej: 120
+    labels:
+      title: "OSPF"
+      xlabel: "Tiempo (s)"
+      ylabel: "Enlace direccional"
+      colorbar: "Utilización (%)"
+    threshold:
+      enable: false
+      value: 80 # marca en rojo celdas con utilización (%) por encima de este valor
 
   # Snapshot de topología en el peor instante (por carga) para 1 controlador
   topology_snapshot_peak:
-    enable: true
-    controller: "Baseline"
+    enable: false
+    controller: "Prueba"
     loads: "all" # "all" o lista: ["1a","2a"]
     edge_agg: "max" # max | mean (si hay 2 direcciones por enlace)
-
+    edge_label_pos: 0.45 # posición de las etiquetas en el enlace (0=inicio, 1=fin)
+    time_override_s: null # si se define, usa este segundo en vez del pico
+    labels:
+      title: "Topología @ pico (ctrl={controller}, load={load}, t={t_peak}s)"

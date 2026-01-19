@@ -3,8 +3,8 @@ drive:
   remote: "UIC_2025:"
 
 paths:
-  raw_root: "PruebaX_final/raw"
-  extracted_root: "PruebaX_final/extracted"
+  raw_root: "Prueba2/raw"
+  extracted_root: "Prueba2/extracted"
 
 defaults:
   zip_glob: "*.zip"
@@ -13,7 +13,55 @@ defaults:
     - "--progress"
 
 scenarios:
-  - name: "Baseline"
+  # Primer intento
+  #- name: "Baseline"
+  #  drive_paths:
+  #    - "UIC_backup/capturas_finales/PruebaY_V2_250Mbps_Baseline"
+
+  #- name: "TE_Agresivo"
+  #  drive_paths:
+  #    - "UIC_backup/capturas_finales/PruebaY_V2_250Mbps_QOS_Aggresive"
+
+  # 2do intento (primera versión del doc)
+  #- name: "Baseline"
+  #  drive_paths:
+  #    - "UIC_backup/Results/PruebaX_BASELINE_0" # dentro de Drive
+  #    - "UIC_backup/Results/PruebaX_BASELINE_1"
+  #- name: "TE_Condicional"
+  #  drive_paths:
+  #    - "UIC_backup/Results/PruebaX_CONDITIONAL_0"
+  #- name: "TE_Agresivo"
+  #  drive_paths:
+  #    - "UIC_backup/Results/PruebaX_AGGRESSIVE_0"
+  #    - "UIC_backup/Results/PruebaX_QOS_Aggressive"
+  #    - "UIC_backup/Results/PruebaX_QOS_Aggressive_2"
+  #    - "UIC_backup/Results/PruebaX_QOS_Aggressive_3"
+
+  # 3er intento (jitter de MQTT incluido)
+  #- name: "OSPF"
+  #  drive_paths:
+  #    - "UIC_backup/capturas_finales/PruebaB_BASELINE__0" # dentro de Drive
+  #- name: "TE_QOS_C"
+  #  drive_paths:
+  #    - "UIC_backup/capturas_finales/PruebaB_TE_QOS_CONDITIONAL__0"
+  #    - "UIC_backup/capturas_finales/PruebaB_TE_QOS_CONDITIONAL_0"
+  #- name: "TE_QOS_D"
+  #  drive_paths:
+  #    - "UIC_backup/capturas_finales/PruebaB_TE_QOS_AGGRESIVE_0"
+
+  # 4to intento (Delay 5 ms en cada enlace)
+  - name: "OSPF"
     drive_paths:
-      - "UIC_backup/capturas_finales/top1_Baseline" # dentro de Drive
-      - "UIC_backup/capturas_finales/top1_Baseline_p2"
+      - "UIC_backup/capturas_finales/PruebaE_BASELINE_0"
+  - name: "TE_QOS_C"
+    drive_paths:
+      - "UIC_backup/capturas_finales/PruebaE_TE_QOS_C_0"
+  - name: "TE_QOS_D"
+    drive_paths:
+      - "UIC_backup/capturas_finales/PruebaE_TE_QOS_D_0"
+  - name: "TE_QOS_D2"
+    drive_paths:
+      - "UIC_backup/capturas_finales/PruebaE_TE_QOS_D_V2_0"
+  - name: "TE_QOS_C2"
+    drive_paths:
+      - "UIC_backup/capturas_finales/PruebaE_TE_QOS_C_V2_0"

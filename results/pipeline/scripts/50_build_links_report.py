@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple, Set
 import pandas as pd
 import yaml
 import matplotlib.pyplot as plt
+import numpy as np
 
 # networkx es opcional (solo para el snapshot de topología)
 try:
@@ -52,6 +53,16 @@ def ensure_columns(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
 def to_num(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce")
 
+def fmt_template(tpl: str, **kwargs) -> str:
+    try:
+        return tpl.format(**kwargs)
+    except Exception:
+        return tpl
+
+def get_metric_label(metric_labels: dict, metric: str) -> str:
+    lbl = (metric_labels or {}).get(metric)
+    return str(lbl) if lbl else metric
+
 def t_critical(level: float, df: int) -> float:
     alpha = 1.0 - level
     p = 1.0 - alpha / 2.0
@@ -69,6 +80,13 @@ def compute_ci(mean: float, std: float, n: int, level: float, method: str) -> Tu
     se = std / math.sqrt(n)
     crit = t_critical(level, n - 1) if method == "t" else (1.96 if abs(level - 0.95) < 1e-6 else 1.96)
     return (mean - crit * se, mean + crit * se)
+
+def clamp_ci(lo: Optional[float], hi: Optional[float]) -> Tuple[Optional[float], Optional[float]]:
+    if lo is not None and not pd.isna(lo) and lo < 0:
+        lo = 0.0
+    if hi is not None and not pd.isna(hi) and hi < 0:
+        hi = 0.0
+    return lo, hi
 
 def counter_rate(series: pd.Series, dt_s: float) -> pd.Series:
     """Series de contador acumulado -> tasa (unidades/seg). Resets negativos -> 0."""
@@ -313,7 +331,7 @@ def resample_link_timeseries(df_link: pd.DataFrame, resample_s: int) -> pd.DataF
     df["t_rel_s"] = (df["timestamp"] - t0).astype(int)
 
     # resample por link_id
-    freq = f"{int(resample_s)}S"
+    freq = f"{int(resample_s)}s"  # pandas future-proof: usar 's' en lugar de 'S'
     out_rows = []
 
     for link_id, g in df.groupby("link_id", dropna=False):
@@ -446,9 +464,11 @@ def plot_heatmap(
     df_link_mean: pd.DataFrame,
     out_path: Path,
     value_col: str,
-    title: str,
+    metric_label: str,
+    labels_cfg: Optional[dict] = None,
     vmax: Optional[float] = None,
     index_order: Optional[List[str]] = None,
+    threshold_cfg: Optional[dict] = None,
 ):
     """
     df_link_mean: columnas [link_id, t_rel_s, <value_col>]
@@ -466,11 +486,22 @@ def plot_heatmap(
             ordered.extend(rest)
         pivot = pivot.reindex(ordered)
 
-    fig, ax = plt.subplots(figsize=(12, max(4, 0.25 * len(pivot.index))))
+    labels_cfg = labels_cfg or {}
+    title = labels_cfg.get("title") or f"{metric_label} (heatmap)"
+    xlabel = labels_cfg.get("xlabel") or "t_rel (s)"
+    ylabel = labels_cfg.get("ylabel") or "link_id"
+    cbar_label = labels_cfg.get("colorbar") or metric_label
+    fig_w = labels_cfg.get("fig_width") or labels_cfg.get("width")
+    fig_h = labels_cfg.get("fig_height") or labels_cfg.get("height")
+
+    fig_w = float(fig_w) if fig_w else 12
+    fig_h = float(fig_h) if fig_h else max(4, 0.25 * len(pivot.index))
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
     im = ax.imshow(pivot.values, aspect="auto", interpolation="nearest", vmax=vmax)
     ax.set_title(title)
-    ax.set_xlabel("t_rel (s)")
-    ax.set_ylabel("link_id")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
 
     # ticks: no pongas todos si hay muchos
     xticks = list(range(0, pivot.shape[1], max(1, pivot.shape[1] // 10)))
@@ -482,7 +513,22 @@ def plot_heatmap(
     ax.set_yticklabels(pivot.index.tolist())
 
     cbar = fig.colorbar(im, ax=ax)
-    cbar.set_label(value_col)
+    cbar.set_label(cbar_label)
+
+    # marcas de umbral (celdas donde valor supera threshold)
+    threshold_cfg = threshold_cfg or {}
+    if threshold_cfg.get("enable", False):
+        try:
+            th_val = float(threshold_cfg.get("value"))
+        except Exception:
+            th_val = None
+        if th_val is not None:
+            vals = pivot.values
+            ys, xs = np.where(vals > th_val)
+            if len(xs) > 0:
+                ax.scatter(xs, ys, s=6, color="red", marker="s", alpha=0.6, label=f">{th_val}")
+                if not ax.get_legend_handles_labels()[0]:
+                    ax.legend(loc="upper right", fontsize=8, frameon=True)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=200)
@@ -537,6 +583,7 @@ def plot_topology_snapshot(
     out_path: Path,
     title: str,
     edge_agg: str = "max",
+    edge_label_pos: float = 0.5,
 ):
     if nx is None:
         print("WARNING: networkx no está instalado; se omite snapshot de topología.")
@@ -633,7 +680,11 @@ def plot_topology_snapshot(
             edge_labels[(u, v)] = f"{util:.1f}%"#  / {cap} Mbps"
         else:
             edge_labels[(u, v)] = f"{util:.1f}%"
-    nx.draw_networkx_edge_labels(G, pos, ax=ax, edge_labels=edge_labels, font_size=7)
+    try:
+        lp = max(0.0, min(1.0, float(edge_label_pos)))
+    except Exception:
+        lp = 0.5
+    nx.draw_networkx_edge_labels(G, pos, ax=ax, edge_labels=edge_labels, font_size=7, label_pos=lp)
 
     sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
@@ -664,6 +715,7 @@ def main():
 
     resample_s = int(cfg["time"].get("resample_s", 1))
     min_reps_per_t = int(cfg["time"].get("min_reps_per_t", 1))
+    crop_common_ts = bool(cfg["time"].get("crop_to_common_time", False))
 
     out_dir = Path(cfg["outputs"]["out_dir"]).resolve()
     plots_dir = Path(cfg["outputs"]["plots_dir"]).resolve()
@@ -689,6 +741,8 @@ def main():
         rep_rows = []
         global_ts_rows = []     # por rep (para luego agregar sobre reps)
         link_ts_rows = []       # por rep (para luego agregar sobre reps, por link)
+        global_ts_meta = []
+        link_ts_meta = []
     
         if not extracted_root.exists():
             print(f"ERROR: extracted_root no existe: {extracted_root}")
@@ -754,7 +808,14 @@ def main():
                             "total_mbps": float(r["total_mbps"]) if pd.notna(r["total_mbps"]) else None,
                             "sum_drop_rate": float(r["sum_drop_rate"]) if pd.notna(r["sum_drop_rate"]) else None,
                         })
-    
+                    if not df_global.empty:
+                        global_ts_meta.append({
+                            "controller": controller,
+                            "load": load,
+                            "rep": rep,
+                            "t_max": int(df_global["t_rel_s"].max()),
+                        })
+
                     for _, r in df_links_res.iterrows():
                         link_ts_rows.append({
                             "controller": controller,
@@ -766,11 +827,41 @@ def main():
                             "mbps": float(r["mbps"]) if pd.notna(r["mbps"]) else None,
                             "drop_rate": float(r["drop_rate"]) if pd.notna(r["drop_rate"]) else None,
                         })
+                    if not df_links_res.empty and "link_id" in df_links_res.columns:
+                        for lid, g in df_links_res.groupby("link_id"):
+                            link_ts_meta.append({
+                                "controller": controller,
+                                "load": load,
+                                "rep": rep,
+                                "link_id": lid,
+                                "t_max": int(g["t_rel_s"].max()),
+                            })
     
         rep_df = pd.DataFrame(rep_rows)
         miss_df = pd.DataFrame(missing_rows)
         global_rep_df = pd.DataFrame(global_ts_rows)
         link_rep_df = pd.DataFrame(link_ts_rows)
+        if crop_common_ts:
+            if not global_rep_df.empty and global_ts_meta:
+                gmeta = pd.DataFrame(global_ts_meta)
+                mins = (
+                    gmeta.groupby(["controller", "load"])["t_max"]
+                    .min()
+                    .reset_index()
+                    .rename(columns={"t_max": "t_max_min"})
+                )
+                global_rep_df = global_rep_df.merge(mins, on=["controller", "load"], how="left")
+                global_rep_df = global_rep_df[global_rep_df["t_rel_s"] <= global_rep_df["t_max_min"]].drop(columns=["t_max_min"])
+            if not link_rep_df.empty and link_ts_meta:
+                lmeta = pd.DataFrame(link_ts_meta)
+                mins = (
+                    lmeta.groupby(["controller", "load", "link_id"])["t_max"]
+                    .min()
+                    .reset_index()
+                    .rename(columns={"t_max": "t_max_min"})
+                )
+                link_rep_df = link_rep_df.merge(mins, on=["controller", "load", "link_id"], how="left")
+                link_rep_df = link_rep_df[link_rep_df["t_rel_s"] <= link_rep_df["t_max_min"]].drop(columns=["t_max_min"])
     
         rep_df.to_csv(rep_summary_path, index=False)
         miss_df.to_csv(missing_path, index=False)
@@ -801,9 +892,10 @@ def main():
                     out[f"{m}_min"] = float(v.min()) if n else None
                     out[f"{m}_max"] = float(v.max()) if n else None
                     out[f"{m}_count"] = n
-    
+
                     if ci_enable and (n >= 2) and (mean is not None) and (std is not None):
                         lo, hi = compute_ci(mean, std, n, ci_level, ci_method)
+                        lo, hi = clamp_ci(lo, hi)
                         out[f"{m}_ci95_low"] = lo
                         out[f"{m}_ci95_high"] = hi
                     else:
@@ -833,6 +925,7 @@ def main():
                     out[f"{col}_count"] = n
                     if ci_enable and (n >= 2) and (mean is not None) and (std is not None):
                         lo, hi = compute_ci(mean, std, n, ci_level, ci_method)
+                        lo, hi = clamp_ci(lo, hi)
                         out[f"{col}_ci95_low"] = lo
                         out[f"{col}_ci95_high"] = hi
                     else:
@@ -874,6 +967,7 @@ def main():
     
     # ----------------- Plots -----------------
     plots_cfg = cfg.get("plots", {})
+    metric_labels_cfg = cfg.get("metric_labels", {}) or {}
 
     # Heatmaps (util y drops) para una selección
     heat_cfg = plots_cfg.get("heatmaps", {})
@@ -899,6 +993,23 @@ def main():
         if warmup_s > 0:
             dfp = dfp[dfp["t_rel_s"] >= warmup_s]
 
+        # recorte temporal manual
+        tw = heat_cfg.get("time_window", {}) or {}
+        t_start = tw.get("start_s", None)
+        t_end = tw.get("end_s", None)
+        if t_start is not None:
+            try:
+                t_start_val = int(t_start)
+                dfp = dfp[dfp["t_rel_s"] >= t_start_val]
+            except Exception:
+                pass
+        if t_end is not None:
+            try:
+                t_end_val = int(t_end)
+                dfp = dfp[dfp["t_rel_s"] <= t_end_val]
+            except Exception:
+                pass
+
         # filtra tiempos con suficientes reps (solo visual)
         min_reps = int(heat_cfg.get("min_reps_per_t", 1))
         dfp = dfp[dfp["util_pct_count"] >= min_reps]
@@ -906,27 +1017,21 @@ def main():
         order_mode = heat_cfg.get("directed_pair_order", "minmax")
         index_order = order_link_ids_for_heatmap(dfp["link_id"].tolist(), id_mode, order_mode=order_mode)
 
+        labels_cfg = heat_cfg.get("labels", {}) or {}
+        metric_label = get_metric_label(metric_labels_cfg, "util_pct_mean")
+        threshold_cfg = heat_cfg.get("threshold", {}) or {}
         out_u = plots_dir / f"heat_util_{sel.get('controller','all')}_{sel.get('load','all')}.png"
         plot_heatmap(
             dfp,
             out_u,
             value_col="util_pct_mean",
-            title=f"Heatmap util_pct (ctrl={sel.get('controller')}, load={sel.get('load')})",
+            metric_label=metric_label,
+            labels_cfg=labels_cfg,
             vmax=100.0,
             index_order=index_order,
+            threshold_cfg=threshold_cfg,
         )
         print(f"OK plot: {out_u}")
-
-        out_d = plots_dir / f"heat_drop_{sel.get('controller','all')}_{sel.get('load','all')}.png"
-        plot_heatmap(
-            dfp,
-            out_d,
-            value_col="drop_rate_mean",
-            title=f"Heatmap drop_rate (drops/s) (ctrl={sel.get('controller')}, load={sel.get('load')})",
-            vmax=None,
-            index_order=index_order,
-        )
-        print(f"OK plot: {out_d}")
 
     # Snapshot topología en el peor instante (por carga) para UN controlador
     snap_cfg = plots_cfg.get("topology_snapshot_peak", {})
@@ -951,8 +1056,15 @@ def main():
                 rr = rep_df[(rep_df["controller"] == ctrl) & (rep_df["load"] == ld)]
                 if rr.empty:
                     continue
-                # usa el t_peak mediano entre reps para robustez
-                t_peak = int(pd.to_numeric(rr["t_peak_s"], errors="coerce").median(skipna=True))
+                # usa el t_peak mediano entre reps para robustez, salvo override por config
+                t_override = snap_cfg.get("time_override_s", None)
+                if t_override is not None:
+                    try:
+                        t_peak = int(t_override)
+                    except Exception:
+                        t_peak = int(pd.to_numeric(rr["t_peak_s"], errors="coerce").median(skipna=True))
+                else:
+                    t_peak = int(pd.to_numeric(rr["t_peak_s"], errors="coerce").median(skipna=True))
                 warmup_s = int(pd.to_numeric(rr["warmup_s"], errors="coerce").median(skipna=True))
 
                 dfp = link_mean_df[(link_mean_df["controller"] == ctrl) & (link_mean_df["load"] == ld)].copy()
@@ -960,7 +1072,10 @@ def main():
                 dfp = dfp[dfp["t_rel_s"] >= warmup_s]
 
                 outp = plots_dir / f"topo_peak_{ctrl}_{ld}_t{t_peak}.png"
-                title = f"Topología @ pico (ctrl={ctrl}, load={ld}, t={t_peak}s)"
+                labels_cfg = snap_cfg.get("labels", {}) or {}
+                title_tpl = labels_cfg.get("title") or "Topología @ pico (ctrl={controller}, load={load}, t={t_peak}s)"
+                title = fmt_template(title_tpl, controller=ctrl, load=ld, t_peak=t_peak)
+                label_pos = snap_cfg.get("edge_label_pos", 0.5)
                 plot_topology_snapshot(
                     dfp.rename(columns={
                         "util_pct_mean":"util_pct_mean",
@@ -971,6 +1086,7 @@ def main():
                     out_path=outp,
                     title=title,
                     edge_agg=edge_agg,
+                    edge_label_pos=label_pos,
                 )
                 print(f"OK plot: {outp}")
 

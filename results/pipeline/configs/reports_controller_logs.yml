@@ -1,0 +1,124 @@
+# Reporte: controller_logs (parsing de logs del controlador SDN)
+# Busca logs en:
+#   extracted_root/<controller>/<load>/rep_*/logs/controller*.log
+#
+# Extrae:
+# - Instalaciones de flows: [FLOW] install ...
+# - Reroutes: [TE] reroute ...
+# - CLASS new_cookie: [CLASS] ... (solo para estimar latencia CLASS->FLOW)
+#
+# Genera:
+# - events.csv: un evento por fila
+# - rep_summary.csv: conteos por repetición (incluye post-warmup)
+# - load_summary.csv: promedios por carga/controlador (con CI opcional)
+# - timeseries_mean.csv: series por segundo agregadas (post-warmup)
+# - plots/*.png: opcional (barra por carga + series)
+
+report: controller_logs
+
+inputs:
+  extracted_root: "Results/extracted"
+  logs_glob: "rep_*/logs/controller*.log"
+  controller_filter: [] # ["test_newTop_TE", "test_newTop_QoS"] o [] = todos
+  encoding: "utf-8"
+  encoding_errors: "replace"
+
+# Reconstrucción de tiempo (segundos relativos) a partir de prefijos del log.
+# - Mantiene relojes independientes por prefijo.
+# - t_actual = max(relojes)
+# Útil si:
+#   [NET] aparece cada 10 s
+#   [TE] aparece cada 5 s
+log_time:
+  prefix_clocks:
+    "[NET]": 10
+    "[TE]": 5
+  first_tick_at_zero: true
+
+time:
+  resample_s: 1
+  min_reps_per_t: 2 # filtro SOLO para agregar/graficar series
+
+# Warmup para mitigar el "spike" inicial de instalación de flujos
+warmup:
+  mode: "fixed" # fixed | auto | none
+  fixed:
+    seconds: 15
+  auto:
+    # detecta cuando installs/s suavizado cae bajo el umbral
+    flow_rate_th: 3.0
+    smooth_window_s: 5
+    sustain_s: 10
+    max_search_s: 120
+  fallback_if_not_found: 0
+
+stats:
+  confidence:
+    enable: true
+    level: 0.95
+
+parse:
+  # Si tus logs cambian, ajusta regex aquí (defaults ya coinciden con tu ejemplo).
+  patterns:
+    class_new_cookie: '^\[CLASS\]\s+new_cookie=(0x[0-9a-fA-F]+)\s+class=([A-Z0-9\-_]+)\s+rule=([A-Z0-9\-_]+)\s+stable=([^\s]+)\s+queue=(\d+).*?(\d+\.\d+\.\d+\.\d+:\S+)\s+->\s+(\d+\.\d+\.\d+\.\d+:\S+)\s+proto=(\d+)'
+    flow_install: '^\[FLOW\]\s+install\s+cookie=(0x[0-9a-fA-F]+)\s+class=([A-Z0-9\-_]+)\s+stable=([^\s]+)\s+queue=(\d+)\s+src=([^\s]+)\s+dst=([^\s]+)\s+proto=(\d+)\s+path=\[([0-9,\s]+)\]'
+    te_reroute: '^\[TE\]\s+reroute\s+cookie=(0x[0-9a-fA-F]+)->(0x[0-9a-fA-F]+)\s+class=([A-Z0-9\-_]+)\s+rate=([0-9\.]+)\s+old_path=\[([0-9,\s]+)\]\s+new_path=\[([0-9,\s]+)\]'
+
+outputs:
+  out_dir: "Results/processed/controller_logs"
+  plots_dir: "Results/processed/controller_logs/plots"
+  csv:
+    events: "events.csv"
+    rep_summary: "rep_summary.csv"
+    load_summary: "load_summary.csv"
+    timeseries_mean: "timeseries_mean.csv"
+    missing: "missing_files.csv"
+
+plots:
+  bar_by_load:
+    enable: false
+    metric: "reroutes_post_warmup_mean" # solo reroutes
+    loads: "all" # o lista: ["1a","3a"]
+    show_ci: true
+    labels:
+      title: "Reroutes por carga - {controller}"
+      xlabel: "Carga"
+      ylabel: "Reroutes"
+
+  bar_grouped:
+    enable: false
+    controllers: ["TE_QOS_C", "TE_QOS_D"] # o lista: ["Baseline","TE_Agresivo"]
+    loads: ["4a", "5a", "6a", "7a", "8a", "9a", "10a", "11a", "12a"] # o lista: ["1a","3a"]
+    metric: "reroutes_post_warmup_mean"
+    show_ci: true
+    labels:
+      title: "Reroutes por carga (comparación)"
+      xlabel: "Carga"
+      ylabel: "Reroutes"
+      legend: "Controlador"
+
+  # NUEVO: total de rutas instaladas (installs + reroutes) por controlador y carga
+  bar_total_routes:
+    enable: true
+    controllers: "all" # o lista de controladores
+    loads: "all" # o lista de cargas, ej ["1a","3a","5a"]
+    show_ci: true
+    grid: true
+    load_suffix: "n" # reemplaza el sufijo de las cargas, ej "2a" -> "2n"
+    labels:
+      title: ""
+      xlabel: "Carga"
+      ylabel: "Cantidad de instalaciones de rutas"
+      legend: "Controlador"
+
+  timeseries:
+    enable: false
+    select:
+      load: "all" # o "1a"
+    loads: "all" # o lista: ["1a","3a"]
+    metric: "reroutes_mean" # reroutes_mean | installs_mean
+    labels:
+      title: "Reroutes vs tiempo - load={load}"
+      xlabel: "Tiempo relativo (s)"
+      ylabel: "Reroutes/s"
+      legend: "Controlador"
