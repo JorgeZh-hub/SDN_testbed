@@ -514,28 +514,27 @@ hosts:
 n_switches: 14
 links:
   # --- Core / Núcleo (bypass alto, atajos por S6 más bajos) ---
-  - link1: "switch1-eth1, switch2-eth1, 250"
-  - link2: "switch1-eth2, switch10-eth2, 250"
+  - link1: "switch1-eth1, switch2-eth1, 100"
+  - link2: "switch1-eth2, switch10-eth1, 100"
   - link3: "switch1-eth3, switch3-eth1, 250" # acceso IoT/VoIP sin cuello en S1-S3
   - link4: "switch1-eth4, switch14-eth1, 250"
 
-  - link5: "switch2-eth4, switch4-eth1, 250"
-  - link6: "switch10-eth4, switch11-eth1, 250"
+  - link5: "switch1-eth5, switch4-eth1, 250"
+  - link6: "switch1-eth6, switch11-eth1, 250"
 
-  - link7: "switch2-eth2, switch9-eth1, 100"
-  - link8: "switch2-eth3, switch5-eth1, 100"
+  - link7: "switch1-eth7, switch5-eth1, 100"
+  - link8: "switch1-eth8, switch9-eth1, 100"
 
-  - link9: "switch10-eth1, switch5-eth2, 100"
-  - link10: "switch10-eth3, switch9-eth3, 100"
+  - link9: "switch7-eth1, switch2-eth2, 100"
+  - link10: "switch7-eth2, switch8-eth1, 250"
 
-  - link11: "switch5-eth3, switch7-eth1, 250"
+  - link11: "switch7-eth3, switch10-eth2, 100"
+  - link12: "switch7-eth4, switch6-eth1, 250"
 
-  - link12: "switch9-eth2, switch7-eth3, 250"
-
-  - link13: "switch7-eth2, switch8-eth1, 250"
-  - link14: "switch5-eth4, switch6-eth1, 250"
-  - link15: "switch7-eth4, switch12-eth1, 250"
-  - link16: "switch9-eth4, switch13-eth1, 250"
+  - link13: "switch7-eth5, switch12-eth1, 250"
+  - link14: "switch7-eth6, switch13-eth1, 250"
+  - link15: "switch7-eth7, switch5-eth2, 250"
+  - link16: "switch7-eth8, switch9-eth2, 250"
 
   # --- Hosts / Accesos (subir “elefantes” para que α escale) ---
   - link17: "emiCoap0-eth0, switch3-eth2, 50"

@@ -49,7 +49,7 @@ while true; do
     fi
 
     echo "Starting SIP call..."
-    sipp -sf "$scenario_file" "$server_ip" -i "$client_ip" -t u1 -r 10 -l 50 -recv_timeout 10000 &
+    sipp -sf "$scenario_file" "$server_ip" -i "$client_ip" -t u1 -r 10 -l 10 -recv_timeout 10000 &
 
     sipp_pid=$!
 

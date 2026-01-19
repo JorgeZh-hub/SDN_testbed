@@ -5,6 +5,7 @@ flows:
     transport: "tcp"
     dst_port: 1883
     extra_filter: ""
+    jitter: True
 
   - name: "mqtt_sis_pub"
     link: "emiMqtt0-brkMqtt0"
@@ -12,6 +13,7 @@ flows:
     transport: "tcp"
     dst_port: 1883
     extra_filter: ""
+    jitter: True
 
   - name: "mqtt_sec_sub"
     link: "brkMqtt1-cliMqtt1"
@@ -19,6 +21,7 @@ flows:
     transport: "tcp"
     src_port: 1883
     extra_filter: ""
+    jitter: True
 
   - name: "mqtt_sis_sub"
     link: "brkMqtt0-cliMqtt0"
@@ -26,6 +29,7 @@ flows:
     transport: "tcp"
     src_port: 1883
     extra_filter: ""
+    jitter: True
 
   - name: "amqp_iot_pub"
     link: "cliIoT0-brkAmqp0"
@@ -33,6 +37,7 @@ flows:
     transport: "tcp"
     dst_port: 5672
     extra_filter: ""
+    jitter: True
 
   - name: "http_med_post"
     link: "cliIoT0-srvHttp0"
@@ -40,6 +45,7 @@ flows:
     transport: "tcp"
     dst_port: 5000
     extra_filter: ""
+    jitter: True
 
   - name: "wb_iot_post"
     link: "cliIoT0-srvWbS0"
@@ -47,6 +53,7 @@ flows:
     transport: "tcp"
     dst_port: 8080
     extra_filter: ""
+    jitter: True
 
   - name: "coap_iot_sent"
     link: "emiCoap0-srvCoap0"
@@ -69,6 +76,7 @@ flows:
     transport: "tcp"
     src_port: 8554
     extra_filter: "rtp.seq"
+    jitter: True
 
   - name: "rtp_iptv_rec"
     link: "srvIpTV0-cliSRT0"
@@ -97,6 +105,15 @@ flows:
     protocol: "tcp"
     transport: "tcp"
     extra_filter: ""
+    jitter: True
+
+  - name: "udp_noise"
+    link: "cliUdp2-srvUdp2"
+    protocol: "udp"
+    transport: "udp"
+    src_port: 5001
+    extra_filter: ""
+    jitter: True
 
 containers:
   - "ryu-ctrl"
