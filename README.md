@@ -3,8 +3,8 @@
 Este repositorio contiene el banco de pruebas usado en mi tesis para emular una WAN SDN con **Containernet/OVS** y un controlador **Ryu (OpenFlow 1.3)**, evaluando tres modos de encaminamiento:
 
 * **Baseline (OSPF-like)**: Dijkstra con costo basado en capacidad del enlace.
-* **TE_QOS_C (Conditional / enlaces compartidos)**: reroute selectivo de flujos movibles cuando hay congestión.
-* **TE_QOS_D (Aggressive / enlaces dedicados)**: dedicación de enlaces por **grupos de colas** con locks TTL.
+* **TE_QOS_C (enlaces compartidos)**: reroute reactivo selectivo de flujos movibles cuando hay congestión.
+* **TE_QOS_D (enlaces dedicados)**: dedicación reactiva de enlaces por **grupos de colas** con locks TTL.
 
 Incluye tráfico IoT (MQTT/CoAP/HTTP/AMQP), multimedia (RTP/RTSP/HLS), FTP y ruido UDP, con generación **tipo ráfagas (CTMC N-Burst)**.
 
