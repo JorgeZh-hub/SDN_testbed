@@ -1,9 +1,9 @@
 controller:
   name: "ryu-ctrl"
   image: "controller_ryu"
-  command: "--observe-links --config-file /app/baseline_te2/ryu.conf --ofp-listen-host 0.0.0.0 --ofp-tcp-listen-port 6653 baseline_te2.app"
+  command: "--observe-links --config-file /app/generic_controller/ryu.conf --ofp-listen-host 0.0.0.0 --ofp-tcp-listen-port 6653 generic_controller.app"
   volumes:
-    - "../../containers/core/controller/baseline_te2:/app/baseline_te2"
+    - "../../containers/core/controller/generic_controller:/app/generic_controller"
     - "./:/app/exp"
 
 qos:
@@ -12,13 +12,12 @@ qos:
   default_queue_id: 0
 
   # OPTIMIZACIÓN VM:
-  apply_scope: "switch-switch"     # default (más rápido). Alternativa: "all-switch-ports"
-  parallel_workers: 4              # 4–6 suele ir bien
-  post_start_sleep_s: 1.0          # 0.5–2.0
-  use_no_wait: true               # acelera ovs-vsctl
+  apply_scope: "switch-switch" # default (más rápido). Alternativa: "all-switch-ports"
+  parallel_workers: 4 # 4–6 suele ir bien
+  post_start_sleep_s: 1.0 # 0.5–2.0
+  use_no_wait: true # acelera ovs-vsctl
   ovs_timeout_s: 5
-  strict: false                   # no aborta si falla en algún puerto
-
+  strict: false # no aborta si falla en algún puerto
 
   # Definición de colas (ids = los que usas en OFPActionSetQueue(queue_id))
   # min_ratio/max_ratio son fracciones de la capacidad del enlace (cap_mbps del TCLink)

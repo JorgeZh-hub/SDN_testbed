@@ -3,8 +3,8 @@ drive:
   remote: "UIC_2025:"
 
 paths:
-  raw_root: "Prueba2/raw"
-  extracted_root: "Prueba2/extracted"
+  raw_root: "Prueba3/raw"
+  extracted_root: "Prueba3/extracted"
 
 defaults:
   zip_glob: "*.zip"
@@ -50,18 +50,29 @@ scenarios:
   #    - "UIC_backup/capturas_finales/PruebaB_TE_QOS_AGGRESIVE_0"
 
   # 4to intento (Delay 5 ms en cada enlace)
+  #- name: "OSPF"
+  #  drive_paths:
+  #    - "UIC_backup/capturas_finales/PruebaE_BASELINE_0"
+  #- name: "TE_QOS_C"
+  #  drive_paths:
+  #    - "UIC_backup/capturas_finales/PruebaE_TE_QOS_C_0"
+  #- name: "TE_QOS_D"
+  #  drive_paths:
+  #    - "UIC_backup/capturas_finales/PruebaE_TE_QOS_D_0"
+  #- name: "TE_QOS_D2"
+  #  drive_paths:
+  #    - "UIC_backup/capturas_finales/PruebaE_TE_QOS_D_V2_0"
+  #- name: "TE_QOS_C2"
+  #  drive_paths:
+  #    - "UIC_backup/capturas_finales/PruebaE_TE_QOS_C_V2_0"
+
+  # 5to intento (Red con 4 vias)
   - name: "OSPF"
     drive_paths:
-      - "UIC_backup/capturas_finales/PruebaE_BASELINE_0"
+      - "UIC_backup/capturas_finales/PruebaF_OSPF_V2_0"
   - name: "TE_QOS_C"
     drive_paths:
-      - "UIC_backup/capturas_finales/PruebaE_TE_QOS_C_0"
+      - "UIC_backup/capturas_finales/PruebaF_TE_QOS_C_V2_0"
   - name: "TE_QOS_D"
     drive_paths:
-      - "UIC_backup/capturas_finales/PruebaE_TE_QOS_D_0"
-  - name: "TE_QOS_D2"
-    drive_paths:
-      - "UIC_backup/capturas_finales/PruebaE_TE_QOS_D_V2_0"
-  - name: "TE_QOS_C2"
-    drive_paths:
-      - "UIC_backup/capturas_finales/PruebaE_TE_QOS_C_V2_0"
+      - "UIC_backup/capturas_finales/PruebaF_TE_QOS_D_V2_0"

@@ -1,8 +1,8 @@
-input_csv: "Prueba2/processed/flows/load_summary_flow.csv"
-output_dir: "Prueba2/processed/flows/tables"
+input_csv: "Prueba3/processed/flows/load_summary_flow.csv"
+output_dir: "Prueba3/processed/flows/tables"
 decimals: 4
 selection:
-  controllers: ["OSPF", "TE_QOS_C2", "TE_QOS_D2"] # ["allo "all"
+  controllers: ["TE_QOS_C", "TE_QOS_D"] # ["allo "all"
   loads: "all" # ["1a", "5a", "8a"] # o "all"
   flows: ["mqtt_sec_sub", "rtp_voip", "rtp_iptv_rec", "udp_noise"] # o "all"
 

@@ -264,7 +264,7 @@ cleanup() {
     # Optional: run additional cleanup script (host-side)
     if [[ $SIM_STARTED -eq 1 && $STOPPED_CONTAINERS -eq 0 && -x "$STOP_CONTAINERS" ]]; then
         echo "[CLEANUP] Running stop_containers.sh..."
-        "$STOP_CONTAINERS" || true
+        "$STOP_CONTAINERS" --controller "$RYU_CONTAINER_NAME" --sim "$CONTAINERNET_CONTAINER_NAME" --prefix "mn." || true
         STOPPED_CONTAINERS=1
     fi
 
@@ -546,7 +546,7 @@ fi
 # Optional extra cleanup script
 if [[ -x "$STOP_CONTAINERS" ]]; then
     echo "[MAIN] Running stop_containers.sh..."
-    "$STOP_CONTAINERS" || true
+    "$STOP_CONTAINERS" --controller "$RYU_CONTAINER_NAME" --sim "$CONTAINERNET_CONTAINER_NAME" --prefix "mn." || true
     STOPPED_CONTAINERS=1
 fi
 

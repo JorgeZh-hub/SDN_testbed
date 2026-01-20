@@ -5,7 +5,7 @@ import heapq
 from typing import Dict, Tuple, List, Optional, Set, Callable
 
 class PathEngine:
-    """Dijkstra sobre el grafo de switches, con avoid_edges y constraint de residual."""
+    """Dijkstra over the switch graph, with avoid_edges and residual constraint."""
 
     def __init__(self, topo, stats, logger):
         self.topo = topo

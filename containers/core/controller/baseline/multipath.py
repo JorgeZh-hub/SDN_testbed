@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-from import_multipath import *
+from containers.core.controller.baseline.import_multipath import *
 
 REFERENCE_BW = 10000000
 DEFAULT_BW = 10000000

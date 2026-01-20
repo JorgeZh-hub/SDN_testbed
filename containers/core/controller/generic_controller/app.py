@@ -25,7 +25,7 @@ from .flow_manager import FlowManager
 from .topology_manager import TopologyManager
 from .path_engine import PathEngine
 from .stats_manager import StatsManager
-from .te_engine import TEEngine
+from .te_engine import TEEngine, MODE_TE_QOS_C, MODE_TE_QOS_D
 from .config_loader import load_yaml, parse_links_capacity
 from .classifier import PriorityClassifier
 
@@ -40,7 +40,7 @@ CONF.register_opts([
     cfg.FloatOpt("diagnostic_period", default=60.0),
     cfg.BoolOpt("observe_net", default=True, help="Request Port/FlowStats"),
     cfg.BoolOpt("te_activate", default=True, help="Run TE (te.run_once)"),
-    cfg.StrOpt("te_mode", default="conditional", help="TE mode: conditional|aggressive"),
+    cfg.StrOpt("te_mode", default=MODE_TE_QOS_C, help="TE mode: TE_QOS_C|TE_QOS_D (alias: conditional|aggressive)"),
     cfg.BoolOpt("logger_stats", default=True, help="Enable StatsManager logs"),
     cfg.BoolOpt("logger_flow_manager", default=True, help="Enable FlowManager logs"),
     cfg.BoolOpt("logger_te", default=True, help="Enable TEEngine logs"),
@@ -84,7 +84,7 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         self.cap_db = parse_links_capacity(top_data)
         self.classifier = PriorityClassifier.from_cfg(te_data) if classifier_enable else PriorityClassifier([])
 
-        # ---- QoS mapping (genérico) ----
+        # ---- QoS mapping (generic) ----
         qos_cfg = te_data.get("qos", {}) if isinstance(te_data, dict) else {}
         if not isinstance(qos_cfg, dict):
             qos_cfg = {}
@@ -98,18 +98,18 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         except Exception:
             default_queue_id = None
 
-        # ---- TE: clases elegibles para reroute ----
+        # ---- TE: classes eligible for reroute ----
         te_cfg = te_data.get("te", {}) if isinstance(te_data, dict) else {}
         if not isinstance(te_cfg, dict):
             te_cfg = {}
         managed_classes = te_cfg.get("managed_classes", None)
         if not (isinstance(managed_classes, list) and managed_classes):
-            # fallback: si hay reglas con te: true, usar esas clases
+            # fallback: if there are rules with te: true, use those classes
             mc = sorted({r.out_class for r in getattr(self.classifier, "rules", []) if getattr(r, "te", None) is True})
             managed_classes = mc if mc else None
 
 
-        # ---- TE: prioridad por colas ----
+        # ---- TE: queue priority ----
         protect_queues = te_cfg.get("protect_queues", None)
         if protect_queues is not None and not isinstance(protect_queues, list):
             protect_queues = None
@@ -118,15 +118,15 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         lower_queue_is_higher_priority = bool(lower_queue_is_higher_priority)
 
         unknown_queue_behavior = te_cfg.get("unknown_queue_behavior", "protect")
-        # ---- TE Aggressive settings (optional) ----
-        aggr_cfg = te_cfg.get("aggressive", {})
-        if not isinstance(aggr_cfg, dict):
-            aggr_cfg = {}
+        # ---- TE_QOS_D settings (optional) ----
+        te_qos_d_cfg = te_cfg.get("TE_QOS_D", te_cfg.get("te_qos_d", te_cfg.get("aggressive", {})))
+        if not isinstance(te_qos_d_cfg, dict):
+            te_qos_d_cfg = {}
 
-        queue_groups = aggr_cfg.get("queue_groups", te_cfg.get("queue_groups", None))
-        lock_ttl_s = aggr_cfg.get("lock_ttl_s", te_cfg.get("lock_ttl_s", 300.0))
-        lock_bidirectional = aggr_cfg.get("lock_bidirectional", te_cfg.get("lock_bidirectional", True))
-        max_moves_per_run = aggr_cfg.get("max_moves_per_run", te_cfg.get("max_moves_per_run", 50))
+        queue_groups = te_qos_d_cfg.get("queue_groups", te_cfg.get("queue_groups", None))
+        lock_ttl_s = te_qos_d_cfg.get("lock_ttl_s", te_cfg.get("lock_ttl_s", 300.0))
+        lock_bidirectional = te_qos_d_cfg.get("lock_bidirectional", te_cfg.get("lock_bidirectional", True))
+        max_moves_per_run = te_qos_d_cfg.get("max_moves_per_run", te_cfg.get("max_moves_per_run", 50))
 
         self.topo = TopologyManager(self.logger)
         self.flow_mgr = FlowManager(
@@ -195,13 +195,13 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         )
         if managed_classes is not None:
             self.logger.info("[INIT] TE managed_classes=%s", sorted({str(x).strip().upper() for x in managed_classes}))
-        self.logger.info("[INIT] TE mode=%s", CONF.te_mode)
+        self.logger.info("[INIT] TE mode=%s", self.te.te_mode)
         self.logger.info("[INIT] TE protect_queues=%s lower_queue_is_higher_priority=%s unknown_queue_behavior=%s",
                          sorted({int(x) for x in (protect_queues or [])}) if protect_queues is not None else [0],
                          lower_queue_is_higher_priority,
                          unknown_queue_behavior)
-        # TE aggressive config (only used when te_mode=aggressive)
-        self.logger.info("[INIT] TE aggressive lock_ttl_s=%s lock_bidirectional=%s max_moves_per_run=%s queue_groups=%s",
+        # TE_QOS_D config (only used when te_mode=TE_QOS_D)
+        self.logger.info("[INIT] TE TE_QOS_D lock_ttl_s=%s lock_bidirectional=%s max_moves_per_run=%s queue_groups=%s",
                          lock_ttl_s, bool(lock_bidirectional), int(max_moves_per_run), queue_groups if queue_groups is not None else "AUTO")
         if classifier_enable:
             self.logger.info(
@@ -329,7 +329,7 @@ class ReactiveIoTTE13(app_manager.RyuApp):
     def port_desc_reply_handler(self, ev):
         dp = ev.msg.datapath
         self.topo.update_port_desc(dp.id, ev.msg.body)
-        # Re-intenta mapear capacidades para links ya descubiertos (por si LinkAdd llegó antes de PortDesc)
+        # Retry capacity mapping for already discovered links (in case LinkAdd arrived before PortDesc)
         for (u,v), (u_p, v_p) in list(self.topo.link_ports.items()):
             spn = self.topo.get_port_name(u, u_p) or ""
             dpn = self.topo.get_port_name(v, v_p) or ""
@@ -461,7 +461,7 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         l4 = pkt.get_protocol(tcp.tcp) or pkt.get_protocol(udp.udp) or pkt.get_protocol(icmp.icmp)
 
         # resolve src/dst switch (L2 learning)
-        # src_sw debe ser el switch de acceso donde está el host (no el switch que generó el PacketIn si es un miss intermedio)
+        # src_sw must be the access switch where the host sits (not the switch that generated PacketIn if it was an intermediate miss)
         src_sw = self.flow_mgr.hosts.get(eth.src, (dpid, in_port))[0]
         dst_sw = None
         hosts_snapshot = dict(self.flow_mgr.hosts)
@@ -494,9 +494,9 @@ class ReactiveIoTTE13(app_manager.RyuApp):
         desc = FlowDescriptor(src_dpid=src_sw, dst_dpid=dst_sw, key=fk, dscp=dscp)
         cookie = self.flow_mgr.get_or_create_cookie(desc)
 
-        # Ruta para este cookie.
-        # IMPORTANTE: si el cookie ya tiene un path (instalado previamente), NO recalculamos en cada PacketIn,
-        # porque un miss intermedio puede llegar desde un switch distinto (dpid), lo que causaría paths parciales y "flapping".
+        # Path for this cookie.
+        # IMPORTANT: if the cookie already has a path (previously installed), do NOT recalc on every PacketIn,
+        # because an intermediate miss can arrive from a different switch (dpid), causing partial paths and flapping.
         existing_path = self.flow_mgr.cookie_path.get(cookie)
         if existing_path and existing_path[0] == src_sw and existing_path[-1] == dst_sw:
             path = existing_path

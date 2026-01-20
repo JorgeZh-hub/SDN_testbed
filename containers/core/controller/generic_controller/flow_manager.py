@@ -83,7 +83,7 @@ class FlowManager:
             cur = self.cookie_for_key(ckey, 0)
             self._active_cookie_by_key[ckey] = cur
 
-            # Guardamos clase temprano (evita recalcular y ayuda a TE/stats)
+            # Store class early (avoids recomputing and helps TE/stats)
             self.cookie_class[cur] = cls
             self.cookie_queue_id[cur] = self._resolve_qos_queue_id(cls, p.queue_id)
 
@@ -119,7 +119,7 @@ class FlowManager:
 
     def classify_detail(self, desc: FlowDescriptor, dscp: Optional[int]):
         """
-        Retorna (cls, stable_side, stable_port, rule_name)
+        Returns (cls, stable_side, stable_port, rule_name)
         stable_side: "src" | "dst" | None
         """
         k = desc.key
@@ -134,13 +134,13 @@ class FlowManager:
                 l4_dst=k.l4_dst,
                 dscp=dscp
             )
-        # fallback si por alguna razón no existe
+        # fallback if for some reason it does not exist
         return self.classify(desc, dscp), None, None, None
 
     def classify_policy(self, desc: FlowDescriptor, dscp: Optional[int]) -> Policy:
-        """Clasificación + metadatos QoS/TE.
+        """Classification + QoS/TE metadata.
 
-        Si el classifier implementa classify_policy(), lo usa. Si no, hace fallback.
+        If the classifier implements classify_policy(), use it; otherwise fallback.
         """
         k = desc.key
         if hasattr(self.classifier, "classify_policy"):
@@ -160,9 +160,9 @@ class FlowManager:
     def _cookie_key(self, desc: FlowDescriptor, cls: str,
                     stable_side: Optional[str], stable_port: Optional[int]) -> Any:
         """
-        Debe alinearse con el MATCH instalado.
-        - Por defecto no incluye L4
-        - Si la clasificación devuelve un puerto estable, incluye (stable_side, stable_port)
+        Must align with the installed MATCH.
+        - By default it does not include L4
+        - If classification returns a stable port, include (stable_side, stable_port)
         """
         k = desc.key
         base = (k.eth_type, k.src_mac, k.dst_mac, k.ip_src, k.ip_dst, k.ip_proto)
@@ -174,16 +174,16 @@ class FlowManager:
 
 
     def _resolve_qos_queue_id(self, cls: str, rule_queue_id: Optional[int]) -> Optional[int]:
-        """Resuelve el queue_id *lógico* (QoS) para un flow.
+        """Resolve the logical QoS queue_id for a flow.
 
-        Este valor se guarda en índices internos (p.ej. para TE/prioridad),
-        incluso si queues_enable=False (no se instala OFPActionSetQueue).
+        This value is stored in internal indexes (e.g., for TE/priority),
+        even if queues_enable=False (no OFPActionSetQueue is installed).
 
-        Precedencia:
-          1) queue indicada explícitamente por la regla (rule_queue_id)
-          2) mapeo global class_to_queue
+        Precedence:
+          1) queue explicitly set by the rule (rule_queue_id)
+          2) global class_to_queue map
           3) default_queue_id
-          4) fallback legacy: CRIT->crit_queue_id, else->be_queue_id
+          4) legacy fallback: CRIT->crit_queue_id, else->be_queue_id
         """
         if rule_queue_id is not None:
             return int(rule_queue_id)
@@ -192,13 +192,13 @@ class FlowManager:
             return int(self.class_to_queue[c])
         if self.default_queue_id is not None:
             return int(self.default_queue_id)
-        # Legacy fallback (mantiene compatibilidad con CRIT/BE)
+        # Legacy fallback (maintains compatibility with CRIT/BE)
         if c == "CRIT":
             return int(self.queue_id_crit)
         return int(self.queue_id_be)
 
     def _queue_id_for_actions(self, qos_queue_id: Optional[int]) -> Optional[int]:
-        """Queue a instalar en OF actions. Solo si queues_enable=True."""
+        """Queue to install in OF actions. Only if queues_enable=True."""
         if not self.use_queues:
             return None
         return int(qos_queue_id) if qos_queue_id is not None else None
@@ -234,10 +234,10 @@ class FlowManager:
 
 
     def _unregister_cookie_path_only(self, cookie: int):
-        """Quita el cookie de link_cookies para su path anterior, sin borrar desc/clase/queue.
+        """Remove the cookie from link_cookies for its previous path, without deleting desc/class/queue.
 
-        Necesario cuando re-instalamos el MISMO cookie en un path distinto (packet_in),
-        para no dejar índices stale en link_cookies.
+        Needed when we re-install the SAME cookie on a different path (packet_in),
+        to avoid stale indexes in link_cookies.
         """
         edges = self.cookie_edges.get(cookie, set())
         for e in edges:
@@ -276,10 +276,10 @@ class FlowManager:
                      cookie: int,
                      path: List[int],
                      last_port: int,
-                     idle_timeout: int = 0,
-                     hard_timeout: int = 0,
-                     table_id: int = 0):
-        """Instala reglas en cada switch del path (direccion src->dst)."""
+                    idle_timeout: int = 0,
+                    hard_timeout: int = 0,
+                    table_id: int = 0):
+        """Install rules on each switch along the path (direction src->dst)."""
         if not path:
             return
 
@@ -298,17 +298,17 @@ class FlowManager:
             match_kwargs["ipv4_dst"] = k.ip_dst
         if k.ip_proto is not None:
             match_kwargs["ip_proto"] = int(k.ip_proto)
-        # Clasificación + puerto estable (si aplica)
+        # Classification + stable port (if applicable)
         p = self.classify_policy(desc, desc.dscp)
         cls, stable_side, stable_port, rule = p.out_class, p.stable_side, p.stable_port, p.rule_name
-        # Si es CRIT y hay puerto estable, metemos SOLO ese puerto (no el efímero)
+        # If CRIT and there is a stable port, use ONLY that port (not the ephemeral one)
         prio = self.priority_base
         if stable_side and stable_port is not None and k.ip_proto in (6, 17):
             field = ("tcp_" if k.ip_proto == 6 else "udp_") + stable_side
             match_kwargs[field] = int(stable_port)
-            prio = self.priority_base + 10  # regla más específica gana a la agregada
+            prio = self.priority_base + 10  # more specific rule wins over aggregate
         
-        # si es BE, hacer el match más "L3"
+        # if BE, make the match more "L3"
         """if cls == "BE":
             match_kwargs.pop("eth_src", None)
             match_kwargs.pop("eth_dst", None)"""
@@ -359,8 +359,8 @@ class FlowManager:
         if cookie not in self.cookie_queue_id:
             self.cookie_queue_id[cookie] = qos_queue_id
 
-        # Si este cookie ya tenía un path, debemos limpiar sus edges anteriores del índice link_cookies
-        # antes de registrar el nuevo path, para evitar cookies "stale" en enlaces viejos.
+        # If this cookie already had a path, clean its previous edges from link_cookies
+        # before registering the new path to avoid stale cookies on old links.
         old_path = self.cookie_path.get(cookie)
         if old_path and old_path != path:
             self._unregister_cookie_path_only(cookie)
@@ -382,7 +382,7 @@ class FlowManager:
 
 
     def delete_cookie_exact(self, cookie: int, dpids: Optional[List[int]] = None):
-        """Borra reglas con cookie exacta en switches del path (o todos si dpids None)."""
+        """Delete rules with exact cookie in path switches (or all if dpids None)."""
         targets = dpids or list(self.topo.datapaths.keys())
         for dpid in targets:
             dp = self.topo.datapaths.get(dpid)
@@ -403,7 +403,7 @@ class FlowManager:
             dp.send_msg(mod)
 
     def reroute_cookie(self, old_cookie: int, new_path: List[int], table_id: int = 0) -> Optional[int]:
-        """Make-before-break: instala versión nueva, barrier, borra versión vieja, actualiza índices."""
+        """Make-before-break: install new version, barrier, delete old version, update indexes."""
         desc = self.cookie_desc.get(old_cookie)
         dst_mac = desc.key.dst_mac if desc else None
         if desc is None:

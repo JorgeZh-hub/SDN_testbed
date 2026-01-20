@@ -7,11 +7,11 @@ from typing import Dict, Tuple, Optional, Set, List
 from ryu.ofproto import ofproto_v1_3
 
 class TopologyManager:
-    """Mantiene grafo L2 (solo switches) + mapeo puertos/nombres.
+    """Maintains L2 graph (switches only) + port/name mapping.
 
-    neigh[u][v] = out_port en u hacia v (link dirigido)
+    neigh[u][v] = out_port on u toward v (directed link)
     port_to_neigh[u][out_port] = v
-    port_name[(dpid, port_no)] = "s1-eth1" o "switch1-eth1" (según OVS)
+    port_name[(dpid, port_no)] = "s1-eth1" or "switch1-eth1" (from OVS)
     """
 
     def __init__(self, logger):
@@ -79,7 +79,7 @@ class TopologyManager:
         self.neigh.get(dpid1, {}).pop(dpid2, None)
         self.neigh.get(dpid2, {}).pop(dpid1, None)
 
-        # limpia port_to_neigh en ambos switches
+        # clean port_to_neigh in both switches
         for p, v in list(self.port_to_neigh.get(dpid1, {}).items()):
             if v == dpid2:
                 self.port_to_neigh[dpid1].pop(p, None)

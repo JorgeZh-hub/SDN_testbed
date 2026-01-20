@@ -8,28 +8,27 @@ from .utils import ip_in_any_subnet, mac_oui
 @dataclass
 class Rule:
     name: str
-    # Clase lógica (nombre libre): p.ej. "HI-REL", "LOW-LAT", "BEST-EFF".
-    # Por compatibilidad, puedes seguir usando "CRIT"/"BE".
+    # Logical class (free name): e.g. "HI-REL", "LOW-LAT", "BEST-EFF".
+    # For compatibility, you can keep using "CRIT"/"BE".
     out_class: str
 
-    # Match asociado a la regla (puede ser vacío en el "default").
+    # Match criteria for the rule (can be empty for the default).
     match: Dict[str, Any] = field(default_factory=dict)
 
-    # Prioridad para ordenar reglas (más alto gana).
+    # Priority to order rules (higher wins).
     priority: int = 0
 
-    # QoS: cola (queue id) sugerida por la regla. Si es None, se puede
-    # resolver por mapeo externo (class->queue) o por defaults.
+    # QoS: queue id suggested by the rule. If None, it can be resolved by an external
+    # class->queue map or defaults.
     queue_id: Optional[int] = None
 
-    # Si True, al instalar el flow se intentará usar un puerto L4 estable
-    # (dst/src) definido por la regla, para evitar matchear contra puertos
-    # efímeros. Por defecto se mantiene el comportamiento antiguo:
-    # CRIT => True, el resto => False.
+    # If True, when installing the flow it tries to use a stable L4 port (dst/src)
+    # defined by the rule to avoid matching ephemeral ports. By default it keeps
+    # the old behavior: CRIT => True, the rest => False.
     stable_l4: bool = False
 
-    # Si True, esta clase/regla se considera elegible para TE (reroute).
-    # Si es None, la decisión puede venir de una lista global (managed_classes).
+    # If True, this class/rule is eligible for TE (reroute).
+    # If None, the decision can come from a global list (managed_classes).
     te: Optional[bool] = None
 
 
@@ -43,21 +42,21 @@ class Policy:
     te: Optional[bool]
 
 class PriorityClassifier:
-    """Clasificación por reglas (first-match), cargadas desde YAML.
+    """Rule-based classification (first-match), loaded from YAML.
 
-    Soporta campos opcionales en rule.match:
+    Supports optional fields in rule.match:
       - src_subnets: ["10.0.0.0/24", ...]
       - dst_subnets: [...]
       - dscp: [46, 40]  (IPv4 DSCP)
       - src_oui: ["AA:BB:CC", ...]
       - dst_oui: [...]
       - any_oui: [...]
-      - ip_proto: "udp"|"tcp"|"icmp" o número (17,6,...)
+      - ip_proto: "udp"|"tcp"|"icmp" or number (17,6,...)
       - l4_src_ports: [5683, ...]
       - l4_dst_ports: [...]
       - l4_any_ports: [...]
 
-    Nota: si ninguna regla matchea => BE.
+    Note: if no rule matches => BE.
     """
 
     def __init__(self, rules: List[Rule]):
@@ -123,25 +122,25 @@ class PriorityClassifier:
                         l4_src: Optional[int],
                         l4_dst: Optional[int],
                         dscp: Optional[int]) -> Policy:
-        """Clasificación + metadatos QoS/TE.
+        """Classification + QoS/TE metadata.
 
-        Retorna Policy con:
+        Returns Policy with:
           - out_class: string
-          - queue_id: (opcional) queue sugerida por la regla
-          - stable_side/port: (opcional) puerto L4 estable si aplica
-          - rule_name: nombre de la regla matcheada
-          - te: flag opcional de elegibilidad TE
+          - queue_id: (optional) queue suggested by the rule
+          - stable_side/port: (optional) stable L4 port if applicable
+          - rule_name: matched rule name
+          - te: optional TE eligibility flag
         """
         for rule in self.rules:
             if self._match_rule(rule.match, src_mac, dst_mac, ip_src, ip_dst, ip_proto, l4_src, l4_dst, dscp):
                 stable_side = None
                 stable_port = None
 
-                # Puerto estable solo si se habilita stable_l4 y estamos en TCP/UDP
+                # Stable port only if stable_l4 is enabled and we are in TCP/UDP
                 if rule.stable_l4 and ip_proto in (6, 17):
                     m = rule.match or {}
 
-                    # Si la regla define explícitamente dst o src, eso manda.
+                    # If the rule explicitly sets dst or src, that wins.
                     if "l4_dst_ports" in m and l4_dst is not None:
                         stable_side, stable_port = "dst", int(l4_dst)
                     elif "l4_src_ports" in m and l4_src is not None:
@@ -149,7 +148,7 @@ class PriorityClassifier:
                     elif "l4_any_ports" in m:
                         allowed = [int(x) for x in m.get("l4_any_ports", [])]
 
-                        # Preferimos dst si ambos cumplen
+                        # Prefer dst if both match
                         if l4_dst is not None and int(l4_dst) in allowed:
                             stable_side, stable_port = "dst", int(l4_dst)
                         elif l4_src is not None and int(l4_src) in allowed:
@@ -176,7 +175,7 @@ class PriorityClassifier:
                         l4_dst: Optional[int],
                         dscp: Optional[int]) -> Tuple[str, Optional[str], Optional[int], Optional[str]]:
         """
-        Retorna:
+        Returns:
           (out_class, stable_side, stable_port, rule_name)
         stable_side: "src" | "dst" | None
         stable_port: int | None

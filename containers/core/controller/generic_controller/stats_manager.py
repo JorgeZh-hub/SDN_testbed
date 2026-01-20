@@ -9,7 +9,7 @@ from typing import Dict, Optional, Tuple
 from .utils import now
 
 class StatsManager:
-    """Observación de enlaces (PortStats) y flujos (FlowStats) para TE."""
+    """Link (PortStats) and flow (FlowStats) observation for TE."""
 
     def __init__(self,
                  topo,

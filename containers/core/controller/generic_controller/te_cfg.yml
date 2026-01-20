@@ -1,30 +1,34 @@
 # =============================================================================
-# te_conf.yml (QoS + TE genérico por clases/colas)
+# te_conf.yml (QoS + TE by classes/queues)
+# How to use:
+# - qos: map logical classes to queue IDs configured on switches (OVS/HTB/etc).
+# - te: enable/shape Traffic Engineering behavior and eligible classes.
+# - classifiers: first-match rules; higher priority wins; class/queue must exist above.
 # =============================================================================
 
-qos: # Configuración de colas y clases de QoS
-  default_queue: 0
-  class_queues:
+qos: # QoS queue/class configuration
+  default_queue: 0          # queue id to use when a rule/class does not set one
+  class_queues:             # map logical class -> queue id (must match switch QoS)
     HI-REL: 3
     LOW-LAT: 2
     HI-THRU: 1
     BEST-EFF: 0
 
 te:
-  protect_queues: [3, 2] # No mover tráfico de estas colas
-  lower_queue_is_higher_priority: false
-  unknown_queue_behavior: "protect"
-  managed_classes: ["HI-THRU", "BEST-EFF"] # Clases que pueden ser movidas
+  protect_queues: [3, 2]      # Do not move traffic from these queues
+  lower_queue_is_higher_priority: false  # false => higher queue id is higher priority
+  unknown_queue_behavior: "protect"      # protect | lowest
+  managed_classes: ["HI-THRU", "BEST-EFF"] # Classes eligible to move (or rules with te: true)
 
   # ---------------------------------------------------------------------------
-  # Aggressive mode (te_mode=aggressive): locks + grupos de colas (dedicación)
-  # - Si no defines queue_groups, el controlador crea un grupo por cada queue_id observado.
-  # - Puedes agrupar varias colas en un mismo grupo para que compartan "home" y dedicación.
-  aggressive:
-    lock_ttl_s: 300         # segundos (TTL) de un lock antes de expirar
-    lock_bidirectional: true
-    max_moves_per_run: 50   # límite de cookies movidas por ejecución (fase2). Fase1 ignora este límite.
-    queue_groups:
+  # TE_QOS_D (te_mode=TE_QOS_D): locks + queue groups (dedication)
+  # - If queue_groups is not defined, the controller creates one group per observed queue_id.
+  # - You can group several queues together so they share a "home" and dedication.
+  TE_QOS_D:
+    lock_ttl_s: 300         # seconds (TTL) before a lock expires
+    lock_bidirectional: true # if true, lock both directions of a link
+    max_moves_per_run: 50   # cookie move limit per execution (phase2). Phase1 ignores this limit.
+    queue_groups:           # define priority groups by queue id (ranked by queue id)
       - name: GOLD
         queues: [3]
       - name: SILVER
@@ -34,21 +38,21 @@ te:
       - name: COPPER
         queues: [0]
 
-classifiers:
+classifiers: # first-match rules; highest priority wins; class/queue must exist above
   # ===========================================================================
-  # 1) IoT CONSTANTE / CONTROL / TELEMETRÍA  => HI-REL (queue 0)
+  # 1) CONSTANT / CONTROL / TELEMETRY IoT => HI-REL (queue 0)
   # ===========================================================================
   # MQTT (TCP 1883/8883)
   - name: "IOT_MQTT"
     class: "HI-REL"
     queue: 3
-    priority: 100
-    stable_l4: true
+    priority: 100          # higher number = evaluated first
+    stable_l4: true        # keep a stable L4 port match for this rule
     match:
       ip_proto: "tcp"
       l4_any_ports: [1883, 8883]
 
-  # HTTP sensores médicos
+  # HTTP medical sensors
   - name: "IOT_HTTP_MED"
     class: "HI-REL"
     queue: 3
@@ -60,7 +64,7 @@ classifiers:
       src_subnets: ["198.51.100.15/32", "203.0.113.10/32"]
       dst_subnets: ["198.51.100.15/32", "203.0.113.10/32"]
 
-  # WebSocket industrial
+  # Industrial WebSocket
   - name: "IOT_WBS_INDUSTRIAL"
     class: "HI-REL"
     queue: 3
@@ -68,7 +72,7 @@ classifiers:
     stable_l4: true
     match:
       ip_proto: "tcp"
-      l4_any_ports: [8080] # ajusta si usas otro
+      l4_any_ports: [8080] # adjust if you use another port
       src_subnets: ["198.51.100.15/32", "203.0.113.15/32"]
       dst_subnets: ["198.51.100.15/32", "203.0.113.15/32"]
 
@@ -97,7 +101,7 @@ classifiers:
       dst_subnets: ["198.51.100.15/32", "203.0.113.14/32"]
 
   # ===========================================================================
-  # 2) TIEMPO REAL INTERACTIVO (VoIP / VideoLlamada) => LOW-LAT (queue 1)
+  # 2) INTERACTIVE REAL-TIME (VoIP / VideoCall) => LOW-LAT (queue 1)
   # ===========================================================================
   # RTP VoIP (UDP)
   - name: "REALTIME_RTP_VOIP"
@@ -110,7 +114,7 @@ classifiers:
       src_subnets: ["198.51.100.87/32", "203.0.113.80/32"]
       dst_subnets: ["198.51.100.87/32", "203.0.113.80/32"]
 
-  # RTP VideoLlamada (UDP)
+  # RTP VideoCall (UDP)
   - name: "REALTIME_RTP_VIDEOCALL"
     class: "LOW-LAT"
     queue: 2
@@ -122,7 +126,7 @@ classifiers:
       dst_subnets: ["198.51.100.90/32", "203.0.113.86/32"]
 
   # ===========================================================================
-  # 3) ALTO THROUGHPUT (IPTV / VOD / Streaming) => HI-THRU (queue 2)
+  # 3) HIGH THROUGHPUT (IPTV / VOD / Streaming) => HI-THRU (queue 2)
   # ===========================================================================
   # IPTV RTSP (TCP)
   - name: "STREAM_RTSP"
@@ -136,7 +140,7 @@ classifiers:
       src_subnets: ["198.51.100.80/32", "198.51.100.81/32", "203.0.113.84/32"]
       dst_subnets: ["198.51.100.80/32", "198.51.100.81/32", "203.0.113.84/32"]
 
-  # IPTV HLS (HTTP) — para evitar chocar con VOD HTTP, idealmente amárralo por IPs
+  # IPTV HLS (HTTP) - to avoid clashing with VOD HTTP, ideally tie it to IPs
   - name: "STREAM_HLS_IPTV"
     class: "HI-THRU"
     queue: 1
@@ -161,7 +165,7 @@ classifiers:
       dst_subnets: ["198.51.100.89/32", "203.0.113.85/32", "198.51.100.91/32"]
 
   # ===========================================================================
-  # 4) BEST EFFORT / BACKGROUND (FTP + UDP ruido) => BEST-EFF (queue 3)
+  # 4) BEST EFFORT / BACKGROUND (FTP + noisy UDP) => BEST-EFF (queue 3)
   # ===========================================================================
   - name: "default"
     class: "BEST-EFF"

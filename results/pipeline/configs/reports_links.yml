@@ -9,7 +9,7 @@
 report: links
 
 inputs:
-  extracted_root: "Prueba2/extracted"
+  extracted_root: "Prueba3/extracted"
   # Estructura esperada:
   # extracted_root/<controller>/<load>/rep_*/reports/ovs/*.csv
   links_glob: "rep_*/reports/ovs/*.csv"
@@ -79,14 +79,14 @@ metrics:
     - drops_total
 
 outputs:
-  out_dir: "Prueba2/processed/links"
+  out_dir: "Prueba3/processed/links"
   csv:
     rep_summary: "rep_summary.csv"
     load_summary: "load_summary.csv"
     global_timeseries_mean: "global_timeseries_mean.csv"
     link_timeseries_mean: "link_timeseries_mean.csv"
     missing: "missing_files.csv"
-  plots_dir: "Prueba2/processed/links/plots"
+  plots_dir: "Prueba3/processed/links/plots"
 
 # Topología para el snapshot con NetworkX:
 # - positions: tú defines dónde va cada switch (en un plano 2D)
@@ -109,16 +109,26 @@ topology:
     "2": [-2.0, 1.2] # noroeste
 
   links:
+    #- [1, 2, { "capacity_mbps": 250 }]
+    #- [1, 10, { "capacity_mbps": 250 }]
+
+    #- [2, 5, { "capacity_mbps": 90 }]
+    #- [2, 9, { "capacity_mbps": 90 }]
+
+    #- [10, 5, { "capacity_mbps": 90 }]
+    #- [10, 9, { "capacity_mbps": 90 }]
+    #- [5, 7, { "capacity_mbps": 250 }]
+    #- [7, 9, { "capacity_mbps": 250 }]
+
     - [1, 2, { "capacity_mbps": 250 }]
     - [1, 10, { "capacity_mbps": 250 }]
+    - [1, 5, { "capacity_mbps": 250 }]
+    - [1, 9, { "capacity_mbps": 250 }]
 
-    - [2, 5, { "capacity_mbps": 90 }]
-    - [2, 9, { "capacity_mbps": 90 }]
-
-    - [10, 5, { "capacity_mbps": 90 }]
-    - [10, 9, { "capacity_mbps": 90 }]
-    - [5, 7, { "capacity_mbps": 250 }]
-    - [7, 9, { "capacity_mbps": 250 }]
+    - [2, 7, { "capacity_mbps": 90 }]
+    - [10, 7, { "capacity_mbps": 90 }]
+    - [5, 7, { "capacity_mbps": 90 }]
+    - [9, 7, { "capacity_mbps": 90 }]
 
 plots:
   # Heatmaps para un escenario (1 controlador + 1 carga) — solo uso de enlaces.
