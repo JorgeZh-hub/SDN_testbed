@@ -23,7 +23,7 @@ Detalles y validaciones: **[`docs/INSTALL.md`](docs/INSTALL.md)**
 ## Instalación desde cero (clone + quickstart)
 
 ```bash
-git clone <URL_DE_TU_REPO_GITHUB>.git
+git clone https://github.com/JorgeZh-hub/SDN_testbed.git
 cd testbed
 ```
 
