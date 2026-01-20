@@ -1,31 +1,15 @@
 cff-version: 1.2.0
-message: "If you use this repository, please cite the associated thesis."
-type: software
-title: "SDN Testbed (Containernet + Ryu OpenFlow 1.3) – TE + QoS for Heterogeneous Traffic"
+message: "If you use this software, please cite it as below."
 authors:
 
 * family-names: "Zhangallimbay"
   given-names: "Jorge"
-  repository-code: "[https://github.com/JorgeZh-hub/SDN_testbed](https://github.com/JorgeZh-hub/SDN_testbed)"
-  license: "MIT"
-  keywords:
-* "SDN"
-* "OpenFlow"
-* "Ryu"
-* "Containernet"
-* "Mininet"
-* "Open vSwitch"
-* "QoS"
-* "Traffic Engineering"
-* "IoT"
-* "RTP"
-* "MQTT"
-  abstract: >
-  Research testbed to emulate a WAN SDN network using Containernet/OVS and a Ryu OpenFlow 1.3 controller,
-  evaluating baseline routing (OSPF-like) and two TE+QoS modes (shared-links and dedicated-links) under
-  heterogeneous IoT and multimedia traffic with burst (CTMC) generation.
+  title: "SDN Testbed (Containernet + Ryu OpenFlow 1.3) - TE + QoS for Heterogeneous Traffic"
+  version: "1.0.0"
+  date-released: 2026-01-20
+  url: "[https://github.com/JorgeZh-hub/SDN_testbed](https://github.com/JorgeZh-hub/SDN_testbed)"
   preferred-citation:
-  type: thesis
+  type: report
   title: "Evaluación de la Factibilidad de Implementación de Redes Definidas por Software para la Gestión Inteligente de Tráfico Heterogéneo en Entornos de IoT y Servicios Convencionales."
   authors:
 
