@@ -42,7 +42,7 @@ Incluye tráfico IoT (MQTT/CoAP/HTTP/AMQP), multimedia (RTP/RTSP/HLS), FTP y rui
   * `run_experiment.sh` → orquesta un experimento (controller + containernet + capturas)
   * `capture_links.sh` / `capture_containers_metrics.sh` → tcpdump + docker stats
 * `results/pipeline/` → scripts para consolidar resultados y generar tablas/reportes
-* `data/` → (opcional) insumos locales (ej. VoIP/FTP). No imprescindible para correr el core.
+* `data/` → insumos locales (ej. VoIP/FTP) para generar tráfico real.
 
 ---
 
@@ -67,7 +67,7 @@ docker build -t rtp_container_voip:latest containers/services/rtp_container_voip
 
 ---
 
-## Quickstart 1: correr UNA topología (manual)
+## Quickstart 1: correr UNA topología (ejemplo manual)
 
 ```bash
 export HOST_PROJECT_ROOT="$(pwd)"
@@ -118,7 +118,7 @@ El controlador se configura en **dos archivos**:
 2. `containers/core/controller/generic_controller/te_cfg.yml`
    Define: colas/clases, reglas de clasificación (MQTT/CoAP/RTP/HTTP…), colas protegidas y (en TE_QOS_D) `queue_groups` + locks TTL.
 
-> Nota: `ryu.conf` usa rutas **dentro del contenedor** (ej. `/app/exp/topology_conf.yml` y `/app/generic_controller/te_cfg.yml`). Asegúrate que coincidan con los volúmenes definidos en tu `topology_conf.yml`.
+> Nota: `ryu.conf` usa rutas **dentro del contenedor** (ej. `/app/exp/topology_conf.yml` y `/app/generic_controller/te_cfg.yml`). Asegúrate que coincidan con los volúmenes definidos en `topology_conf.yml`.
 
 ---
 
